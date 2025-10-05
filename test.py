@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 from dataset.DataProcessing import *
 from models.SFEG import SFEG
-from utils.f1score import calculate_f_measure
+from util.f1score import calculate_f_measure
 
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 to_pil = transforms.ToPILImage()

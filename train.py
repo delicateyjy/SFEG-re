@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from dataset.DataProcessing import *
 from models.SFEG import SFEG
 import time
-from utils.f1score import calculate_f_measure
+from util.f1score import calculate_f_measure
 from loss.loss import structure_loss
 from tqdm import tqdm
 
