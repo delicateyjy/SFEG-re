@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from module.EG import *
-from module.SFA import SFA_Backbone
-from module.CNR import CGR
+from models.EG import *
+from models.SFA import SFA_Backbone
+from models.CNR import CGR
 # from thop import profile
 
 class SFEG(nn.Module):

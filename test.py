@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from dataset.DataProcessing import *
-from module.SFEG import SFEG
+from models.SFEG import SFEG
 from utils.f1score import calculate_f_measure
 
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')

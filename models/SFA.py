@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from module.SFPM import Spatial_Fourier_Parallel_Mixer
-from module.PFGM import Prior_Feed_Gate_Mixer
+from models.SFPM import Spatial_Fourier_Parallel_Mixer
+from models.PFGM import Prior_Feed_Gate_Mixer
 # from thop import profile
 
 """

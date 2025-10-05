@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from dataset.DataProcessing import *
-from module.SFEG import SFEG
+from models.SFEG import SFEG
 import time
 from utils.f1score import calculate_f_measure
 from loss.loss import structure_loss

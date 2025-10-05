@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from dataset.DataProcessing import RoadDataset
-from module.SFEG import SFEG
+from models.SFEG import SFEG
 from torchvision import transforms
 from PIL import Image
 import os

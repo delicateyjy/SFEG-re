@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from module.CNR import Bott_Conv
+from models.CNR import Bott_Conv
 
 class Prior_Feed_Gate_Mixer(nn.Module):
     def __init__(self, dim, scale_ratio=2, spilt_num=4):

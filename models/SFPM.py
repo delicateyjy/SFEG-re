@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from module.CNR import Bott_Conv
+from models.CNR import Bott_Conv
 
 class Fourier_Core(nn.Module):
     def __init__(self, in_channels, out_channels):

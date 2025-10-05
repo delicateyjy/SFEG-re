@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from math import log
-from module.CNR import CGR, Bott_CGR, CBR
+from models.CNR import CGR, Bott_CGR, CBR
 
 class DEAM(nn.Module):
     def __init__(self, lchannel, hchannel):
