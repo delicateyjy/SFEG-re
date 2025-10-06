@@ -9,7 +9,7 @@ from models.DEAM import DEAM
 # from thop import profile
 
 class COD(nn.Module):
-    def __init__(self, embed_dim=[32, 64, 128, 256, 512], depth=[3, 3, 3, 3, 3]):
+    def __init__(self, embed_dim=[32, 64, 128, 256, 512]):
         super(COD, self).__init__()
 
         self.deam = DEAM(embed_dim[1], embed_dim[4])
