@@ -7,5 +7,5 @@ pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu1
 pip install -U openmim 
 mim install mmcv-full==1.7.2  
 # pip install mamba-ssm==1.2.0 # 不使用mamba时注释
-pip install timm lmdb mmengine numpy==1.26.4 opencv-python==4.8.1.78
+pip install timm lmdb mmengine thop numpy==1.26.4 opencv-python==4.8.1.78
 ```
