@@ -14,14 +14,14 @@ imgsz = 256
 batchsz = 6
 lr = 0.001
 
-ImgPath = "C:/Users/yejia/Desktop/CDS-Net-master/dataset/cracktree200/img/"
-GTPath = "C:/Users/yejia/Desktop/CDS-Net-master/dataset/cracktree200/gt/"
+ImgPath = "./data/TUT/train_img"
+GTPath = "./data/TUT/train_lab"
 
 TrainingSet = RoadDataset(ImgPath, GTPath, imgsz, imgsz, augment=True)
 TrainingLoader = DataLoader(TrainingSet, batch_size=batchsz, shuffle=True)
 
-valImgPath = "C:/Users/yejia/Desktop/CDS-Net-master/dataset/cracktree200/val/"
-valGTPath = "C:/Users/yejia/Desktop/CDS-Net-master/dataset/cracktree200/val_gt/"
+valImgPath = "./data/TUT/val_img/"
+valGTPath = "./data/TUT/val_lab/"
 
 ValSet = RoadDataset(valImgPath, valGTPath, imgsz, imgsz)
 ValLoader = DataLoader(ValSet, batch_size=batchsz, shuffle=False)
