@@ -66,7 +66,7 @@ class EGFM(nn.Module):
 
         return x
     
-
+# 写错了？应该是CIFM
 class CSIM(nn.Module):
     def __init__(self, hchannel, channel):
         super(CSIM, self).__init__()

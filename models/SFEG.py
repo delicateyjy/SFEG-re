@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from models.EG import *
-from models.SFA import SFA_Backbone
+from models.SFA_old import SFA_Backbone
 from models.CNR import CGR
 # from thop import profile
 
