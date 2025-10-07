@@ -15,6 +15,6 @@ def get_logger(process_log_path, name):
     # 级别优先级：DEBUG < INFO < WARNING < ERROR < CRITICAL
     logger.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
-    logger.addLevelName(fh)
+    logger.addHandler(fh)
 
     return logger
