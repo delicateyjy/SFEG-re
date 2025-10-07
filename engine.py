@@ -15,7 +15,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     model.train()
     criterion.train()
 
-    pbar = tqdm(total=len(data_loader.dataloader), desc=f"初始化中。。。")
+    pbar = tqdm(total=len(data_loader.dataloader), desc=f"Initial Loss: Pending")
     for i, data in enumerate(data_loader):
         samples = data['image'].to(torch.device(args.device))
         targets = data['label'].to(torch.device(args.device))
