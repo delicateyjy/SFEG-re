@@ -15,6 +15,10 @@ __pycache__/
 *.pth
 .vscode/
 results/
+logs/
+checkpoints/
+*.jpg
+*.png
 
 # Distribution / packaging
 .Python
