@@ -12,6 +12,7 @@ class Fourier_Core(nn.Module):
     def forward(self, x):
         batch, c, h, w = x.size()
 
+        # 下面一行代码可能出错 RuntimeError: cuFFT error: CUFFT_INTERNAL_ERROR
         ffted = torch.fft.rfft2(x, norm='ortho')
         x_fft_real = torch.unsqueeze(torch.real(ffted), dim=-1)
         x_fft_imag = torch.unsqueeze(torch.imag(ffted), dim=-1)
