@@ -18,6 +18,7 @@ from models import build_model
 from dataset import create_dataset
 from eval.evaluate import eval
 from util.logger import get_logger
+from util.early_stopping import EarlyStopping
 
 def get_args_parser():
     """
@@ -117,6 +118,14 @@ def get_args_parser():
     optim_group.add_argument('--weight_decay', default=0.01, type=float,
                              help='正则化的权重衰减系数')
     
+    # --- 早停 ---
+    early_stop_group = parser.add_argument_group('Early Stopping')
+    early_stop_group.add_argument('--disable-early-stopping', action='store_true', help='禁用早停机制（默认开启）')
+    early_stop_group.add_argument('--patience', default=20, type=int, help='早停耐心值：连续多少个epoch无改善则停止训练')
+    early_stop_group.add_argument('--min_delta', default=0.0005, type=float, help='指标改善的最小阈值')
+    early_stop_group.add_argument('--lr_patience', default=10, type=int, help='学习率衰减的耐心值 (应小于或等于patience)')
+    early_stop_group.add_argument('--lr_factor', default=0.5, type=float, help='学习率衰减因子')
+    early_stop_group.add_argument('--restore_best_weights', action='store_true', help='早停时恢复到最佳权重')
     return parser
 
 def main(args):
@@ -137,30 +146,6 @@ def main(args):
     log_test = get_logger(process_logs_path, 'test')
     log_eval = get_logger(process_logs_path, 'eval')
 
-    # 将训练配置参数记录到日志里
-    log_train.info("args -> " + str(args))
-    log_train.info("args: dataset -> " + str(args.dataset_path))
-    log_train.info("args: bce_weight -> " + str(args.bce_weight))
-    log_train.info("args: iou_weight -> " + str(args.iou_weight))
-    log_train.info('使用配置为：')
-    log_train.info(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
-    log_train.info(f'优化器 -> {args.optimizer}')
-    log_train.info(f'训练总批次 -> {args.epochs}')
-    log_train.info(f'学习率更新策略 -> {args.lr_scheduler}')
-    log_train.info(f'初始学习率 -> {args.lr}')
-    log_train.info(f'权重衰减 -> {args.weight_decay}')
-    # 打印在终端的信息
-    print('使用配置为：')
-    print(f'bce_weight -> {args.bce_weight}')
-    print(f'iou_weight -> {args.iou_weight}')
-    print(f'dataset -> {args.dataset_path}')
-    print(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
-    print(f'优化器 -> {args.optimizer}')
-    print(f'训练总批次 -> {args.epochs}')
-    print(f'学习率更新策略 -> {args.lr_scheduler}')
-    print(f'初始学习率 -> {args.lr}')
-    print(f'权重衰减 -> {args.weight_decay}')
-
 
     # 设置训练设备和随机种子
     device = torch.device(args.device)
@@ -178,6 +163,22 @@ def main(args):
     dataset_size = len(train_dataLoader)
     print('训练数据集大小 = %d' % dataset_size)
     log_train.info('训练数据集大小 = %d' % dataset_size)
+
+    # 是否启用早停
+    early_stopper = None
+    monitor_name = f'{args.eval_metric1}+{args.eval_metric2}'
+    if not args.disable_early_stopping:
+        early_stopper = EarlyStopping(
+            patience=args.patience,
+            min_delta=args.min_delta,
+            monitor=monitor_name, # 使用复合指标名称
+            lr_patience=args.lr_patience,
+            lr_factor=args.lr_factor,
+            restore_best_weights=args.restore_best_weights,
+            mode='max'  # ODS, OIS, mIoU都是越大越好
+        )
+        log_train.info(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
+        print(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
 
     # 用来给AdamW优化器设置参数，可传入只需要梯度更新的参数
     param_dicts = [
@@ -216,18 +217,18 @@ def main(args):
     print("开始训练！")
     log_train.info("开始训练！")
     start_time = time.time()
-    max_mIoU = 0
     # 用于记录综合评价指标（可根据 --eval_metric1/--eval_metric2 选择）
     max_eval = -1.0
-    max_Metrics = {'epoch': 0, 'mIoU': 0, 'ODS': 0, 'OIS': 0, 'F1': 0, 'Precision': 0, 'Recall': 0}
+    max_Metrics = {'epoch': -1, 'mIoU': 0, 'ODS': 0, 'OIS': 0, 'F1': 0, 'Precision': 0, 'Recall': 0}
 
     for epoch in range(args.start_epoch, args.epochs):
         print("---------------------------------------------------------------------------------------")
         print("开始训练 epoch -> ", epoch)
         # 训练一个 epoch
         train_one_epoch(model, criterion, train_dataLoader, optimizer, epoch, args, log_train)
-        # 更新学习率
-        lr_scheduler.step()
+        # 使用早停机制更新学习率
+        if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
+            lr_scheduler.step()
         print("结束训练 epoch -> ", epoch)
         print("---------------------------------------------------------------------------------------")
 
@@ -286,24 +287,41 @@ def main(args):
         print("开始评估 epoch -> ", epoch)
         metrics = eval(log_eval, save_root, epoch)
         for key, value in metrics.items():
-            print(str(key) + ' -> ' + str(value))
+            print(f'{key} -> {value}')
         # 使用通过命令行指定的两个评价指标进行比较（例如 ODS + OIS）
+        # 通过早停机制来判断是否保存模型
         eval_val = metrics.get(args.eval_metric1, 0) + metrics.get(args.eval_metric2, 0)
-        if max_eval < eval_val:
-            max_Metrics = metrics
-            max_eval = eval_val
-            # 保存最佳模型参数
-            checkpoint_paths = [output_dir / f'checkpoint_best.pth']
-            for checkpoint_path in checkpoint_paths:
+        if early_stopper:
+            should_stop = early_stopper(
+                current_score=eval_val,
+                epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                output_dir=output_dir,
+                logger=log_train,
+                extra_save_info={'args': args}
+            )
+
+            if early_stopper.best_epoch == epoch:
+                max_Metrics = metrics
+                max_Metrics['epoch'] = epoch
+            if should_stop:
+                print("早停条件已满足，训练提前结束。")
+                log_train.info("早停条件已满足，训练提前结束。")
+                break # 退出训练循环
+        else:
+            if 'epoch' not in max_Metrics or eval_val > (max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)):
+                max_Metrics = metrics
+                max_Metrics['epoch'] = epoch
+                # 保存最佳模型
+                checkpoint_path = output_dir / 'checkpoint_best.pth'
                 utils.save_on_master({
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
+                    'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(), 'epoch': epoch, 'args': args,
                 }, checkpoint_path)
-            log_train.info("\n更新并保存最佳模型 -> " + str(epoch))
-            print("\n更新并保存最佳模型 -> ", epoch)
+                log_train.info(f"\n更新并保存最佳模型 -> {epoch}")
+                print(f"\n更新并保存最佳模型 -> {epoch}")
 
         print("结束评估 epoch -> ", epoch)
         # 根据选择的评价指标格式化输出：若为 mIoU 单指标，则显示 max_mIoU；
@@ -338,12 +356,28 @@ def main(args):
         print(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
 
     print("---------------------------------------------------------------------------------------")
+    # 打印早停总结
+    if early_stopper:
+        summary = early_stopper.get_summary()
+        summary_str = (
+            f"\n{'='*20} 早停总结 {'='*20}\n"
+            f"监控指标: {summary['monitor_metric']}\n"
+            f"最佳分数: {summary['best_score']:.6f}\n"
+            f"最佳Epoch: {summary['best_epoch']}\n"
+            f"停止Epoch: {summary['stopped_epoch']}\n"
+            f"学习率降低次数: {summary['lr_reductions']}\n"
+            f"{'='*50}"
+        )
+        print(summary_str)
+        log_train.info(summary_str)
+        print("---------------------------------------------------------------------------------------")
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    # 打印在终端的信息
     print('使用配置为：')
     print(f'bce_weight -> {args.bce_weight}')
     print(f'iou_weight -> {args.iou_weight}')
-    print(f'dataset -> {args.dataset_path}')
+    print(f'数据集 -> {args.dataset_path}')
     print(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
     print(f'优化器 -> {args.optimizer}')
     print(f'训练总批次 -> {args.epochs}')
@@ -352,11 +386,12 @@ def main(args):
     print(f'权重衰减 -> {args.weight_decay}')
     print(f'模型更新评价指标1 -> {args.eval_metric1}')
     print(f'模型更新评价指标2 -> {args.eval_metric2}')
-    log_train.info("args -> " + str(args))
-    log_train.info("args: dataset -> " + str(args.dataset_path))
-    log_train.info("args: bce_weight -> " + str(args.bce_weight))
-    log_train.info("args: iou_weight -> " + str(args.iou_weight))
+    # 将训练配置参数记录到日志里
+    log_train.info(f'args -> {str(args)}')
     log_train.info('使用配置为：')
+    log_train.info(f'bce_weight -> {args.bce_weight}')
+    log_train.info(f'iou_weight -> {args.iou_weight}')
+    log_train.info(f'数据集 -> {args.dataset_path}')
     log_train.info(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
     log_train.info(f'优化器 -> {args.optimizer}')
     log_train.info(f'训练总批次 -> {args.epochs}')
