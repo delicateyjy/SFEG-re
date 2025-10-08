@@ -34,17 +34,26 @@ def get_args_parser():
     loss_group.add_argument('--Norm_Type', default='GN', type=str,
                             help='归一化层类型 [GN|BN], GN=组归一化 ')
 
+    # --- 模型评价指标 ---
+    metric_eval = parser.add_argument_group('Metrics')
+    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS'], default='ODS', type=str,
+                             help='更新模型参考的评价指标1')
+    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS'], default='OIS', type=str,
+                             help='更新模型参考的评价指标2')
+
     # --- 数据集 / 输入 ---
     dataset_group = parser.add_argument_group('Dataset / Input')
-    dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500",
-                               help='数据集的根目录')
-    # dataset_group.add_argument('--dataset_path', default="./data/TUT",
-    #                            help='数据集的目录')
+    # 用于autodl
+    # dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500",
+    #                            help='数据集的根目录')
+    # 用于本地
+    dataset_group.add_argument('--dataset_path', default="data/cracktree200",
+                               help='数据集的目录')
     dataset_group.add_argument('--dataset_mode', type=str, default='crack',
                                help='数据集类型')
-    dataset_group.add_argument('--load_width', type=int, default=512,
+    dataset_group.add_argument('--load_width', type=int, default=256,
                                help='输入图像的宽度以进行预处理（将被调整大小）')
-    dataset_group.add_argument('--load_height', type=int, default=512,
+    dataset_group.add_argument('--load_height', type=int, default=256,
                                help='输入图像的高度以进行预处理（将被调整大小）')
 
     # --- 数据处理 / 批次 ---
@@ -60,10 +69,20 @@ def get_args_parser():
 
     # --- 输出 ---
     output_group = parser.add_argument_group('Output / IO')
-    output_group.add_argument('--output_dir', default='/root/autodl-tmp/output/SFEG-re/checkpoints',
-                              help='保存模型参数的输出目录')
-    # output_group.add_argument('--output_dir', default='./checkpoints',
+    # 用于autodl
+    # output_group.add_argument('--output_dir', default='/root/autodl-tmp/output/SFEG-re/checkpoints',
     #                           help='保存模型参数的输出目录')
+    # output_group.add_argument('--output_log', default='/root/autodl-tmp/output/SFEG-re/logs',
+    #                           help='保存训练日志的输出目录')
+    # output_group.add_argument('--output_results', default='/root/autodl-tmp/output/SFEG-re/results',
+    #                           help='保存测试结果的输出目录')
+    # 用于本地
+    output_group.add_argument('--output_dir', default='checkpoints',
+                              help='保存模型参数的输出目录')
+    output_group.add_argument('--output_log', default='logs',
+                              help='保存训练日志的输出目录')
+    output_group.add_argument('--output_results', default='results',
+                              help='保存测试结果的输出目录')
 
     # --- 设备 ---
     device_group = parser.add_argument_group('Device')
@@ -85,7 +104,7 @@ def get_args_parser():
     optim_group = parser.add_argument_group('Optimizer / LR')
     # optim_group.add_argument('--sgd', action='store_true',
     #                          help='使用SGD优化器替代默认的 Adamw优化器')
-    optim_group.add_argument('--optimizer', choices=['adamw', 'sgd'], default='adamw',
+    optim_group.add_argument('--optimizer', choices=['adamw', 'sgd'], default='sgd',
                              help='选择优化器[adamw|sgd]')
     optim_group.add_argument('--lr_scheduler', type=str, default='PolyLR',
                              help='学习率调度器类型 [PolyLR|StepLR|CosLR]')
@@ -93,15 +112,15 @@ def get_args_parser():
                              help='初始学习率')
     optim_group.add_argument('--min_lr', default=1e-6, type=float,
                              help='PolyLR的最小学习率')
-    optim_group.add_argument('--weight_decay', default=0.01, type=float,
-                             help='正则化的权重衰减系数')
     optim_group.add_argument('--lr_drop', default=30, type=int,
                              help='学习率在 StepLR 调度器中下降的周期间隔')
+    optim_group.add_argument('--weight_decay', default=0.01, type=float,
+                             help='正则化的权重衰减系数')
     
     return parser
 
 def main(args):
-    logs_path = "/root/autodl-tmp/output/SFEG-re/logs"
+    logs_path = args.output_log
     cur_time = time.strftime('%Y_%m_%d_%H:%M:%S', time.localtime(time.time()))
     dataset_name = (args.dataset_path).split('/')[-1]
     # 存放训练，测试，评价日志的地址
@@ -123,10 +142,25 @@ def main(args):
     log_train.info("args: dataset -> " + str(args.dataset_path))
     log_train.info("args: bce_weight -> " + str(args.bce_weight))
     log_train.info("args: iou_weight -> " + str(args.iou_weight))
-
+    log_train.info('使用配置为：')
+    log_train.info(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
+    log_train.info(f'优化器 -> {args.optimizer}')
+    log_train.info(f'训练总批次 -> {args.epochs}')
+    log_train.info(f'学习率更新策略 -> {args.lr_scheduler}')
+    log_train.info(f'初始学习率 -> {args.lr}')
+    log_train.info(f'权重衰减 -> {args.weight_decay}')
     # 打印在终端的信息
-    print("args: bce_weight -> " + str(args.bce_weight))
-    print("args: iou_weight -> " + str(args.iou_weight))
+    print('使用配置为：')
+    print(f'bce_weight -> {args.bce_weight}')
+    print(f'iou_weight -> {args.iou_weight}')
+    print(f'dataset -> {args.dataset_path}')
+    print(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
+    print(f'优化器 -> {args.optimizer}')
+    print(f'训练总批次 -> {args.epochs}')
+    print(f'学习率更新策略 -> {args.lr_scheduler}')
+    print(f'初始学习率 -> {args.lr}')
+    print(f'权重衰减 -> {args.weight_decay}')
+
 
     # 设置训练设备和随机种子
     device = torch.device(args.device)
@@ -183,6 +217,8 @@ def main(args):
     log_train.info("开始训练！")
     start_time = time.time()
     max_mIoU = 0
+    # 用于记录综合评价指标（可根据 --eval_metric1/--eval_metric2 选择）
+    max_eval = -1.0
     max_Metrics = {'epoch': 0, 'mIoU': 0, 'ODS': 0, 'OIS': 0, 'F1': 0, 'Precision': 0, 'Recall': 0}
 
     for epoch in range(args.start_epoch, args.epochs):
@@ -212,7 +248,7 @@ def main(args):
         print("开始测试 epoch -> ", epoch)
         # 保存测试数据的地址
         results_path = cur_time + '_Dataset->' + dataset_name
-        save_root = f'/root/autodl-tmp/output/SFEG-re/results/{results_path}/results_' + str(epoch)
+        save_root = f'{args.output_results}/{results_path}/results_' + str(epoch)
         # 修改成测试阶段参数
         args.phase = 'test'
         args.batch_size = args.batch_size_test
@@ -265,9 +301,11 @@ def main(args):
         metrics = eval(log_eval, save_root, epoch)
         for key, value in metrics.items():
             print(str(key) + ' -> ' + str(value))
-        if(max_mIoU < metrics['mIoU']):
+        # 使用通过命令行指定的两个评价指标进行比较（例如 ODS + OIS）
+        eval_val = metrics.get(args.eval_metric1, 0) + metrics.get(args.eval_metric2, 0)
+        if max_eval < eval_val:
             max_Metrics = metrics
-            max_mIoU = metrics['mIoU']
+            max_eval = eval_val
             # 保存最佳模型参数
             checkpoint_paths = [output_dir / f'checkpoint_best.pth']
             for checkpoint_path in checkpoint_paths:
@@ -282,23 +320,68 @@ def main(args):
             print("\n更新并保存最佳模型 -> ", epoch)
 
         print("结束评估 epoch -> ", epoch)
-        print('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+        # 根据选择的评价指标格式化输出：若为 mIoU 单指标，则显示 max_mIoU；
+        # 若为其他组合（例如 ODS+OIS），则显示组合名及其相加的值
+        if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
+            print('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+        else:
+            combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
+            combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
+            print(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
         print("---------------------------------------------------------------------------------------")
 
         log_eval.info("evalauting epoch finish -> " + str(epoch))
-        log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+        if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
+            log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+        else:
+            combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
+            combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
+            log_eval.info(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
         log_eval.info("---------------------------------------------------------------------------------------")
 
     # 把最佳评价得分写入日志
     for key, value in max_Metrics.items():
         log_eval.info(str(key) + ' -> ' + str(value))
-    log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+        print(str(key) + ' -> ' + str(value))
+    if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
+        log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
+    else:
+        combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
+        combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
+        log_eval.info(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
+        print(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
 
+    print("---------------------------------------------------------------------------------------")
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    print('使用配置为：')
+    print(f'bce_weight -> {args.bce_weight}')
+    print(f'iou_weight -> {args.iou_weight}')
+    print(f'dataset -> {args.dataset_path}')
+    print(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
+    print(f'优化器 -> {args.optimizer}')
+    print(f'训练总批次 -> {args.epochs}')
+    print(f'学习率更新策略 -> {args.lr_scheduler}')
+    print(f'初始学习率 -> {args.lr}')
+    print(f'权重衰减 -> {args.weight_decay}')
+    print(f'模型更新评价指标1 -> {args.eval_metric1}')
+    print(f'模型更新评价指标2 -> {args.eval_metric2}')
+    log_train.info("args -> " + str(args))
+    log_train.info("args: dataset -> " + str(args.dataset_path))
+    log_train.info("args: bce_weight -> " + str(args.bce_weight))
+    log_train.info("args: iou_weight -> " + str(args.iou_weight))
+    log_train.info('使用配置为：')
+    log_train.info(f'输入图像尺寸 -> {args.load_width}x{args.load_height}')
+    log_train.info(f'优化器 -> {args.optimizer}')
+    log_train.info(f'训练总批次 -> {args.epochs}')
+    log_train.info(f'学习率更新策略 -> {args.lr_scheduler}')
+    log_train.info(f'初始学习率 -> {args.lr}')
+    log_train.info(f'权重衰减 -> {args.weight_decay}')
+    log_train.info(f'模型更新评价指标1 -> {args.eval_metric1}')
+    log_train.info(f'模型更新评价指标2 -> {args.eval_metric2}')
+
     print('训练时间为 {}'.format(total_time_str))
     log_train.info('训练时间为 {}'.format(total_time_str))
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('SFEG', parents=[get_args_parser()])
