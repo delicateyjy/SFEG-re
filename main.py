@@ -228,20 +228,6 @@ def main(args):
         train_one_epoch(model, criterion, train_dataLoader, optimizer, epoch, args, log_train)
         # 更新学习率
         lr_scheduler.step()
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            # 保存每个 epoch 的模型参数，比较占用空间，设置为每10个epoch保存一次
-            if epoch % 10 == 0:
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch}.pth')
-            for checkpoint_path in checkpoint_paths:
-                # 只在主进程保存模型参数
-                utils.save_on_master({
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, checkpoint_path)
         print("结束训练 epoch -> ", epoch)
         print("---------------------------------------------------------------------------------------")
 
