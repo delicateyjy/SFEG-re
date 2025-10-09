@@ -11,6 +11,7 @@ import torch
 import cv2
 from tqdm import tqdm
 from mmengine.optim.scheduler.lr_scheduler import PolyLR
+import swanlab
 
 import util.misc as utils
 from engine import train_one_epoch
@@ -48,7 +49,7 @@ def get_args_parser():
     # dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500",
     #                            help='数据集的根目录')
     # 用于本地
-    dataset_group.add_argument('--dataset_path', default="data/cracktree200",
+    dataset_group.add_argument('--dataset_path', default="data/CrackMap",
                                help='数据集的目录')
     dataset_group.add_argument('--dataset_mode', type=str, default='crack',
                                help='数据集类型')
@@ -94,7 +95,7 @@ def get_args_parser():
     training_group = parser.add_argument_group('Training / Runtime')
     training_group.add_argument('--phase', type=str, default='train',
                                 help='运行时阶段选择器')
-    training_group.add_argument('--epochs', default=50, type=int,
+    training_group.add_argument('--epochs', default=10, type=int,
                                 help='训练总批次')
     training_group.add_argument('--start_epoch', default=0, type=int,
                                 help='手动开始训练的轮次编号（对恢复训练有用）')
@@ -105,7 +106,7 @@ def get_args_parser():
     optim_group = parser.add_argument_group('Optimizer / LR')
     # optim_group.add_argument('--sgd', action='store_true',
     #                          help='使用SGD优化器替代默认的 Adamw优化器')
-    optim_group.add_argument('--optimizer', choices=['adamw', 'sgd'], default='sgd',
+    optim_group.add_argument('--optimizer', choices=['adamw', 'sgd'], default='adamw',
                              help='选择优化器[adamw|sgd]')
     optim_group.add_argument('--lr_scheduler', type=str, default='PolyLR',
                              help='学习率调度器类型 [PolyLR|StepLR|CosLR]')
@@ -126,9 +127,30 @@ def get_args_parser():
     early_stop_group.add_argument('--lr_patience', default=10, type=int, help='学习率衰减的耐心值 (应小于或等于patience)')
     early_stop_group.add_argument('--lr_factor', default=0.5, type=float, help='学习率衰减因子')
     early_stop_group.add_argument('--restore_best_weights', action='store_true', help='早停时恢复到最佳权重')
+
     return parser
 
 def main(args):
+    # 使用swanlab追踪训练
+    run = swanlab.init(
+        project="SFEG-re", 
+        experiment_name=f"{os.path.basename(args.dataset_path)}-{args.optimizer}-{args.load_height}x{args.load_width}",
+        description="",
+        config={
+            'bce_weight': args.bce_weight,
+            'iou_weight': args.iou_weight,
+            'load_height': args.load_height,
+            'load_width': args.load_width,
+            'optimizer': args.optimizer,
+            'epochs': args.epochs,
+            'lr_scheduler': args.lr_scheduler,
+            'lr': args.lr,
+            'weight_decay': args.weight_decay,
+            'eval_metric1': args.eval_metric1,
+            'eval_metric2': args.eval_metric2
+        }
+    )
+
     logs_path = args.output_log
     cur_time = time.strftime('%Y_%m_%d_%H:%M:%S', time.localtime(time.time()))
     dataset_name = (args.dataset_path).split('/')[-1]
@@ -288,6 +310,7 @@ def main(args):
         metrics = eval(log_eval, save_root, epoch)
         for key, value in metrics.items():
             print(f'{key} -> {value}')
+            swanlab.log({f'{key}': value, 'epoch': epoch})
         # 使用通过命令行指定的两个评价指标进行比较（例如 ODS + OIS）
         # 通过早停机制来判断是否保存模型
         eval_val = metrics.get(args.eval_metric1, 0) + metrics.get(args.eval_metric2, 0)

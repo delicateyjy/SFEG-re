@@ -18,4 +18,9 @@ pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https
 pip install -U openmim
 mim install mmcv-full==1.7.2  
 pip install timm lmdb mmengine thop numpy==1.26.4 opencv-python==4.8.1.78
+
+# # 可选，使用swanlab追踪训练 https://docs.swanlab.cn/
+# # 与swanlab冲突，删除后不影响mmcv
+# pip uninstall --yes openmim openxlab opendatalab rich 
+# pip install swanlab
 ```
