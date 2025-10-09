@@ -4,186 +4,90 @@ import logging
 import glob
 import cv2
 
-def cal_global_acc(pred, gt):
-    h,w = gt.shape
-    return [np.sum(pred==gt), float(h*w)]
+def get_statistics(pred, gt):
+    """计算单张图像的TP, FP, FN"""
+    tp = np.sum((pred == 1) & (gt == 1))
+    fp = np.sum((pred == 1) & (gt == 0))
+    fn = np.sum((pred == 0) & (gt == 1))
+    return tp, fp, fn
 
-def get_statistics_seg(pred, gt, num_cls=2):
-    h,w = gt.shape
-    statistics = []
-    for i in range(num_cls):
-        tp = np.sum((pred==i)&(gt==i))
-        fp = np.sum((pred==i)&(gt!=i))
-        fn = np.sum((pred!=i)&(gt==i))
-        statistics.append([tp, fp, fn])
-    return statistics
-
-def get_statistics_prf(pred, gt):
-    tp = np.sum((pred==1)&(gt==1))
-    fp = np.sum((pred==1)&(gt==0))
-    fn = np.sum((pred==0)&(gt==1))
-    return [tp, fp, fn]
-
-def segment_metrics(pred_list, gt_list, num_cls = 2):
-    global_accuracy_cur = []
-    statistics = []
-
-    for pred, gt in zip(pred_list, gt_list):
-        gt_img = (gt / 255).astype('uint8')
-        pred_img = (pred / 255).astype('uint8')
-        global_accuracy_cur.append(cal_global_acc(pred_img, gt_img))
-        statistics.append(get_statistics_seg(pred_img, gt_img, num_cls))
-
-
-    global_acc = np.sum([v[0] for v in global_accuracy_cur]) / np.sum([v[1] for v in global_accuracy_cur])
-    counts = []
-    for i in range(num_cls):
-        tp = np.sum([v[i][0] for v in statistics])
-        fp = np.sum([v[i][1] for v in statistics])
-        fn = np.sum([v[i][2] for v in statistics])
-
-        counts.append([tp, fp, fn])
-
-    mean_acc = np.sum([v[0] / (v[0] + v[2]) for v in counts]) / num_cls
-    mean_iou_acc = np.sum([v[0] / (np.sum(v)) for v in counts]) / num_cls
-
-    return global_acc, mean_acc, mean_iou_acc
-
-def prf_metrics(pred_list, gt_list):
-    statistics = []
-
-    for pred, gt in zip(pred_list, gt_list):
-        gt_img = (gt / 255).astype('uint8')
-        pred_img = (((pred / np.max(pred))>0.5)).astype('uint8')
-        statistics.append(get_statistics_prf(pred_img, gt_img))
-
-    tp = np.sum([v[0] for v in statistics])
-    fp = np.sum([v[1] for v in statistics])
-    fn = np.sum([v[2] for v in statistics])
-    print("tp:{}, fp:{}, fn:{}".format(tp,fp,fn))
-    p_acc = 1.0 if tp == 0 and fp == 0 else tp / (tp + fp)
-    r_acc = tp / (tp + fn)
-    f_acc = 2 * p_acc * r_acc / (p_acc + r_acc)
-    return p_acc,r_acc,f_acc
-
-
-def cal_prf_metrics(pred_list, gt_list, thresh_step=0.01):
-    final_accuracy_all = []
+def cal_mIoU_metrics(pred_list, gt_list, thresh_step=0.01):
+    """寻找最优阈值下的mIoU"""
+    final_iou = []
     for thresh in np.arange(0.0, 1.0, thresh_step):
-        statistics = []
+        iou_list = []
         for pred, gt in zip(pred_list, gt_list):
             gt_img = (gt / 255).astype('uint8')
             pred_img = (pred / 255 > thresh).astype('uint8')
-            statistics.append(get_statistics(pred_img, gt_img))
-        tp = np.sum([v[0] for v in statistics])
-        fp = np.sum([v[1] for v in statistics])
-        fn = np.sum([v[2] for v in statistics])
+            
+            tp = np.sum((pred_img == 1) & (gt_img == 1))
+            fp = np.sum((pred_img == 1) & (gt_img == 0))
+            fn = np.sum((pred_img == 0) & (gt_img == 1))
+            tn = np.sum((pred_img == 0) & (gt_img == 0))
 
-        p_acc = 1.0 if tp == 0 and fp == 0 else tp / (tp + fp)
-        r_acc = tp / (tp + fn)
-        final_accuracy_all.append([thresh, p_acc, r_acc, 2 * p_acc * r_acc / (p_acc + r_acc)])
+            iou_foreground = tp / (tp + fp + fn) if (tp + fp + fn) != 0 else 0
+            iou_background = tn / (tn + fp + fn) if (tn + fp + fn) != 0 else 0
+            
+            iou_list.append((iou_foreground + iou_background) / 2)
 
-    return final_accuracy_all
+        final_iou.append(np.mean(iou_list))
+        
+    return np.max(final_iou)
 
-def thred_half(src_img_list, tgt_img_list):
-    Precision, Recall, F_score = prf_metrics(src_img_list, tgt_img_list)
-    Global_Accuracy, Class_Average_Accuracy, Mean_IOU = segment_metrics(src_img_list, tgt_img_list)
-    print("Global Accuracy:{}, Class Average Accuracy:{}, Mean IOU:{}, Precision:{}, Recall:{}, F score:{}".format(
-        Global_Accuracy, Class_Average_Accuracy, Mean_IOU, Precision, Recall, F_score))
+def cal_ODS_metrics(pred_list, gt_list, thresh_step=0.01):
+    """计算ODS指标: 全局最优阈值下的F1, P, R"""
+    metrics_by_thresh = []
+    for thresh in np.arange(0.0, 1.0, thresh_step):
+        # 累积整个数据集的TP, FP, FN
+        total_tp, total_fp, total_fn = 0, 0, 0
+        for pred, gt in zip(pred_list, gt_list):
+            gt_img = (gt / 255).astype('uint8')
+            pred_img = (pred / 255 > thresh).astype('uint8')
+            tp, fp, fn = get_statistics(pred_img, gt_img)
+            total_tp += tp
+            total_fp += fp
+            total_fn += fn
 
-def get_statistics(pred, gt):
-    tp = np.sum((pred==1)&(gt==1))
-    fp = np.sum((pred==1)&(gt==0))
-    fn = np.sum((pred==0)&(gt==1))
-    return [tp, fp, fn]
+        # 基于全局统计值计算P, R, F1
+        p = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+        r = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
+        metrics_by_thresh.append({'f1': f1, 'p': p, 'r': r})
+
+    # 找到F1分数最高的指标
+    best_metrics = max(metrics_by_thresh, key=lambda x: x['f1'])
+    return best_metrics['f1'], best_metrics['p'], best_metrics['r']
 
 def cal_OIS_metrics(pred_list, gt_list, thresh_step=0.01):
-    final_F1_list = []
+    """计算OIS指标: 单图最优阈值的平均F1, P, R"""
+    best_f1_list, best_p_list, best_r_list = [], [], []
+
     for pred, gt in zip(pred_list, gt_list):
-        p_acc_list = []
-        r_acc_list = []
-        F1_list = []
+        metrics_by_thresh = []
         for thresh in np.arange(0.0, 1.0, thresh_step):
             gt_img = (gt / 255).astype('uint8')
             pred_img = (pred / 255 > thresh).astype('uint8')
             tp, fp, fn = get_statistics(pred_img, gt_img)
-            p_acc = 1.0 if tp == 0 and fp == 0 else tp / (tp + fp)
-            if tp + fn == 0:
-                r_acc=0
-            else:
-                r_acc = tp / (tp + fn)
-            if p_acc + r_acc==0:
-                F1 = 0
-            else:
-                F1 = 2 * p_acc * r_acc / (p_acc + r_acc)
 
-            p_acc_list.append(p_acc)
-            r_acc_list.append(r_acc)
-            F1_list.append(F1)
+            p = tp / (tp + fp) if (tp + fp) > 0 else 0
+            r = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
+            metrics_by_thresh.append({'f1': f1, 'p': p, 'r': r})
+        
+        # 找到单张图像的最优指标
+        best_image_metric = max(metrics_by_thresh, key=lambda x: x['f1'])
+        best_f1_list.append(best_image_metric['f1'])
+        best_p_list.append(best_image_metric['p'])
+        best_r_list.append(best_image_metric['r'])
 
-        assert len(p_acc_list)==100, "p_acc_list is not 100"
-        assert len(r_acc_list)==100, "r_acc_list is not 100"
-        assert len(F1_list)==100, "F1_list is not 100"
-
-        max_F1 = np.max(np.array(F1_list))
-        final_F1_list.append(max_F1)
-
-    final_F1 = np.sum(np.array(final_F1_list))/len(final_F1_list)
-    return final_F1
-
-def cal_ODS_metrics(pred_list, gt_list, thresh_step=0.01):
-    save_data = {
-        "ODS": [],
-    }
-    final_ODS = []
-    for thresh in np.arange(0.0, 1.0, thresh_step):
-        ODS_list = []
-        for pred, gt in zip(pred_list, gt_list):
-            gt_img = (gt / 255).astype('uint8')
-            pred_img = (pred / 255 > thresh).astype('uint8')
-            tp, fp, fn = get_statistics(pred_img, gt_img)
-            # calculate precision
-            p_acc = 1.0 if tp == 0 and fp == 0 else tp / (tp + fp)
-            if tp + fn == 0:
-                r_acc=0
-            else:
-                r_acc = tp / (tp + fn)
-            if p_acc + r_acc==0:
-                F1 = 0
-            else:
-                F1 = 2 * p_acc * r_acc / (p_acc + r_acc)
-            ODS_list.append(F1)
-
-        ave_F1 = np.mean(np.array(ODS_list))
-        final_ODS.append(ave_F1)
-    ODS = np.max(np.array(final_ODS))
-    return ODS
-
-def cal_mIoU_metrics(pred_list, gt_list, thresh_step=0.01, pred_imgs_names=None, gt_imgs_names=None):
-    final_iou = []
-    for thresh in np.arange(0.0, 1.0, thresh_step):
-        iou_list = []
-        for i, (pred, gt) in enumerate(zip(pred_list, gt_list)):
-            gt_img = (gt / 255).astype('uint8')
-            pred_img = (pred / 255 > thresh).astype('uint8')
-            TP = np.sum((pred_img == 1) & (gt_img == 1))
-            TN = np.sum((pred_img == 0) & (gt_img == 0))
-            FP = np.sum((pred_img == 1) & (gt_img == 0))
-            FN = np.sum((pred_img == 0) & (gt_img == 1))
-            if (FN + FP + TP) <= 0:
-                iou = 0
-            else:
-                iou_1 = TP / (FN + FP + TP)
-                iou_0 = TN / (FN + FP + TN)
-                iou = (iou_1 + iou_0)/2
-            iou_list.append(iou)
-        ave_iou = np.mean(np.array(iou_list))
-        final_iou.append(ave_iou)
-    mIoU = np.max(np.array(final_iou))
-    return mIoU
+    # 对所有图像的最优结果求平均
+    return np.mean(best_f1_list), np.mean(best_p_list), np.mean(best_r_list)
 
 def imread(path, load_size=0, load_mode=cv2.IMREAD_GRAYSCALE, convert_rgb=False, thresh=-1):
+    """读取图像的辅助函数"""
     im = cv2.imread(path, load_mode)
+    if im is None:
+        raise FileNotFoundError(f"未找到图像: {path}")
     if convert_rgb:
         im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     if load_size > 0:
@@ -193,12 +97,18 @@ def imread(path, load_size=0, load_mode=cv2.IMREAD_GRAYSCALE, convert_rgb=False,
     return im
 
 def get_image_pairs(data_dir, suffix_gt='real_B', suffix_pred='fake_B'):
-    gt_list = glob.glob(os.path.join(data_dir, '*{}.png'.format(suffix_gt)))
+    """根据后缀获取预测图和真值图标注"""
+    gt_list = glob.glob(os.path.join(data_dir, f'*{suffix_gt}.png'))
+    if not gt_list:
+        print(f"警告: 在'{data_dir}'中未找到后缀为'*{suffix_gt}.png'的真值图")
+        return [], [], [], []
     pred_list = [ll.replace(suffix_gt, suffix_pred) for ll in gt_list]
-    assert len(gt_list) == len(pred_list)
-    pred_imgs, gt_imgs = [], []
-    pred_imgs_names, gt_imgs_names = [], []
+    
+    pred_imgs, gt_imgs, pred_imgs_names, gt_imgs_names = [], [], [], []
     for pred_path, gt_path in zip(pred_list, gt_list):
+        if not os.path.exists(pred_path):
+            print(f"警告: 未找到 {gt_path} 对应的预测图, 已跳过。")
+            continue
         pred_imgs.append(imread(pred_path))
         gt_imgs.append(imread(gt_path, thresh=127))
         pred_imgs_names.append(pred_path)
@@ -206,46 +116,56 @@ def get_image_pairs(data_dir, suffix_gt='real_B', suffix_pred='fake_B'):
     return pred_imgs, gt_imgs, pred_imgs_names, gt_imgs_names
 
 def eval(log_eval, results_dir, epoch):
-
+    """主评估函数。返回：epoch，mIoU，ODS_F1，ODS_P，ODS_R，OIS_F1，OIS_P，OIS_R"""
     suffix_gt = "lab"
     suffix_pred = "pre"
-    log_eval.info(results_dir)
-    log_eval.info("checkpoints -> " + results_dir)
-    src_img_list, tgt_img_list, pred_imgs_names, gt_imgs_names = get_image_pairs(results_dir, suffix_gt, suffix_pred)
-    assert len(src_img_list) == len(tgt_img_list)
-    final_accuracy_all = cal_prf_metrics(src_img_list, tgt_img_list)
-    final_accuracy_all = np.array(final_accuracy_all)
-    Precision_list, Recall_list, F_list = final_accuracy_all[:, 1], final_accuracy_all[:,2], final_accuracy_all[:, 3]
-    mIoU = cal_mIoU_metrics(src_img_list, tgt_img_list, pred_imgs_names=pred_imgs_names, gt_imgs_names=gt_imgs_names)
-    ODS = cal_ODS_metrics(src_img_list, tgt_img_list)
-    OIS = cal_OIS_metrics(src_img_list, tgt_img_list)
-    log_eval.info("mIouU -> " + str(mIoU))
-    log_eval.info("ODS -> " + str(ODS))
-    log_eval.info("OIS -> " + str(OIS))
-    log_eval.info("F1 -> " + str(F_list[0]))
-    log_eval.info("P -> " + str(Precision_list[0]))
-    log_eval.info("R -> " + str(Recall_list[0]))
-    log_eval.info("eval finish!")
+    log_eval.info(f"评估目录: {results_dir}, 轮次: {epoch}")
 
-    return {'epoch': epoch, 'mIoU': mIoU, 'ODS': ODS, 'OIS': OIS, 'F1': F_list[0], 'Precision': Precision_list[0], 'Recall': Recall_list[0]}
+    src_img_list, tgt_img_list, _, _ = get_image_pairs(results_dir, suffix_gt, suffix_pred)
+    
+    if not src_img_list:
+        log_eval.warning("未找到评估图像对，跳过本次评估。")
+        return {'epoch': epoch}
+
+    mIoU = cal_mIoU_metrics(src_img_list, tgt_img_list)
+    ods_f1, ods_p, ods_r = cal_ODS_metrics(src_img_list, tgt_img_list)
+    ois_f1, ois_p, ois_r = cal_OIS_metrics(src_img_list, tgt_img_list)
+
+    log_eval.info(f"mIoU -> {mIoU:.4f}")
+    log_eval.info(f"ODS_F1 -> {ods_f1:.4f}, ODS_P -> {ods_p:.4f}, ODS_R -> {ods_r:.4f}")
+    log_eval.info(f"OIS_F1 -> {ois_f1:.4f}, OIS_P -> {ois_p:.4f}, OIS_R -> {ois_r:.4f}")
+    log_eval.info("评估完成!")
+
+    return {
+        'epoch': epoch,
+        'mIoU': mIoU,
+        'ODS_F1': ods_f1,
+        'ODS_P': ods_p,
+        'ODS_R': ods_r,
+        'OIS_F1': ois_f1,
+        'OIS_P': ois_p,
+        'OIS_R': ois_r,
+    }
 
 if __name__ == '__main__':
-    suffix_gt = "lab"
-    suffix_pred = "pre"
-    results_dir = "../results/results_test/TUT_results"
-    logging.info(results_dir)
-    src_img_list, tgt_img_list, pred_imgs_names, gt_imgs_names = get_image_pairs(results_dir, suffix_gt, suffix_pred)
-    assert len(src_img_list) == len(tgt_img_list)
-    final_accuracy_all = cal_prf_metrics(src_img_list, tgt_img_list)
-    final_accuracy_all = np.array(final_accuracy_all)
-    Precision_list, Recall_list, F_list = final_accuracy_all[:,1], final_accuracy_all[:,2], final_accuracy_all[:,3]
-    mIoU = cal_mIoU_metrics(src_img_list,tgt_img_list, pred_imgs_names=pred_imgs_names, gt_imgs_names=gt_imgs_names)
-    ODS = cal_ODS_metrics(src_img_list, tgt_img_list)
-    OIS = cal_OIS_metrics(src_img_list, tgt_img_list)
-    print("mIouU -> " + str(mIoU))
-    print("ODS -> " + str(ODS))
-    print("OIS -> " + str(OIS))
-    print("F1 -> " + str(F_list[0]))
-    print("P -> " + str(Precision_list[0]))
-    print("R -> " + str(Recall_list[0]))
-    print("eval finish!")
+    # 配置日志记录器以便在控制台显示信息
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    # !! 请确保此处的路径正确 !!
+    results_dir = "results/2025_10_09_14:02:18_Dataset->CrackMap/results_9"
+    epoch_identifier = "standalone_test"
+
+    # 调用统一的评估函数
+    evaluation_results = eval(logging, results_dir, epoch_identifier)
+
+    # 打印评估结果
+    print("\n--- 独立评估结果摘要 ---")
+    if evaluation_results and len(evaluation_results) > 1:
+        for key, value in evaluation_results.items():
+            if isinstance(value, float):
+                print(f"{key}: {value:.4f}")
+            else:
+                print(f"{key}: {value}")
+    else:
+        print("未能完成评估。")
+

@@ -36,15 +36,15 @@ def get_args_parser():
 
     # --- 模型评价指标 ---
     metric_eval = parser.add_argument_group('Metrics')
-    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS'], default='ODS', type=str, help='更新模型参考的评价指标1')
-    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS'], default='OIS', type=str, help='更新模型参考的评价指标2')
+    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS_F1'], default='ODS_F1', type=str, help='更新模型参考的评价指标1')
+    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS_F1'], default='OIS_F1', type=str, help='更新模型参考的评价指标2')
 
     # --- 数据集 / 输入 ---
     dataset_group = parser.add_argument_group('Dataset / Input')
     # 用于autodl
     # dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500", help='数据集的根目录')
     # 用于本地
-    dataset_group.add_argument('--dataset_path', default="data/CrackMap", help='数据集的目录')
+    dataset_group.add_argument('--dataset_path', default="data/TUT", help='数据集的目录')
     dataset_group.add_argument('--dataset_mode', type=str, default='crack', help='数据集类型')
     dataset_group.add_argument('--load_width', type=int, default=256, help='输入图像的宽度以进行预处理（将被调整大小）')
     dataset_group.add_argument('--load_height', type=int, default=256, help='输入图像的高度以进行预处理（将被调整大小）')
@@ -74,7 +74,7 @@ def get_args_parser():
     # --- 训练相关 ---
     training_group = parser.add_argument_group('Training / Runtime')
     training_group.add_argument('--phase', type=str, default='train', help='运行时阶段选择器')
-    training_group.add_argument('--epochs', default=10, type=int, help='训练总批次')
+    training_group.add_argument('--epochs', default=100, type=int, help='训练总批次')
     training_group.add_argument('--start_epoch', default=0, type=int, help='手动开始训练的轮次编号（对恢复训练有用）')
     training_group.add_argument('--seed', default=42, type=int, help='随机种子')
 
@@ -209,8 +209,7 @@ def main(args):
     log_train.info("开始训练！")
     start_time = time.time()
     # 用于记录综合评价指标（可根据 --eval_metric1/--eval_metric2 选择）
-    max_eval = -1.0
-    max_Metrics = {'epoch': -1, 'mIoU': 0, 'ODS': 0, 'OIS': 0, 'F1': 0, 'Precision': 0, 'Recall': 0}
+    max_Metrics = {'epoch': -1, 'mIoU': 0, 'ODS_F1': 0, 'ODS_P': 0, 'ODS_R': 0, 'OIS_F1': 0, 'OIS_P': 0, 'OIS_R': 0}
 
     for epoch in range(args.start_epoch, args.epochs):
         print("---------------------------------------------------------------------------------------")
@@ -280,7 +279,7 @@ def main(args):
         for key, value in metrics.items():
             print(f'{key} -> {value}')
             swanlab.log({f'{key}': value, 'epoch': epoch})
-        # 使用通过命令行指定的两个评价指标进行比较（例如 ODS + OIS）
+        # 使用通过命令行指定的两个评价指标进行比较（例如 ODS_F1 + OIS_F1）
         # 通过早停机制来判断是否保存模型
         eval_val = metrics.get(args.eval_metric1, 0) + metrics.get(args.eval_metric2, 0)
         if early_stopper:
