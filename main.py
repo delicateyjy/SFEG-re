@@ -36,15 +36,15 @@ def get_args_parser():
 
     # --- 模型评价指标 ---
     metric_eval = parser.add_argument_group('Metrics')
-    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS_F1'], default='ODS_F1', type=str, help='更新模型参考的评价指标1')
-    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS_F1'], default='OIS_F1', type=str, help='更新模型参考的评价指标2')
+    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS_F1'], default='mIoU', type=str, help='更新模型参考的评价指标1')
+    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS_F1'], default='mIoU', type=str, help='更新模型参考的评价指标2')
 
     # --- 数据集 / 输入 ---
     dataset_group = parser.add_argument_group('Dataset / Input')
     # 用于autodl
     # dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500", help='数据集的根目录')
-    # 用于本地
-    dataset_group.add_argument('--dataset_path', default="data/TUT", help='数据集的目录')
+    # 用于本地      
+    dataset_group.add_argument('--dataset_path', default="data/DeepCrack", help='数据集的目录')
     dataset_group.add_argument('--dataset_mode', type=str, default='crack', help='数据集类型')
     dataset_group.add_argument('--load_width', type=int, default=256, help='输入图像的宽度以进行预处理（将被调整大小）')
     dataset_group.add_argument('--load_height', type=int, default=256, help='输入图像的高度以进行预处理（将被调整大小）')
@@ -81,12 +81,12 @@ def get_args_parser():
     # --- 优化器 / 学习率 / 正则化 ---
     optim_group = parser.add_argument_group('Optimizer / LR')
     # optim_group.add_argument('--sgd', action='store_true', help='使用SGD优化器替代默认的 Adamw优化器')
-    optim_group.add_argument('--optimizer', choices=['adamw', 'sgd'], default='adamw', help='选择优化器[adamw|sgd]')
-    optim_group.add_argument('--lr_scheduler', type=str, default='PolyLR', help='学习率调度器类型 [PolyLR|StepLR|CosLR]')
-    optim_group.add_argument('--lr', default=5e-4, type=float, help='初始学习率')
+    optim_group.add_argument('--optimizer', choices=['adamw', 'adam', 'sgd'], default='adam', help='选择优化器[adamw|adam|sgd]')
+    optim_group.add_argument('--lr', default=0.001, type=float, help='初始学习率')
+    optim_group.add_argument('--weight_decay', default=1e-4, type=float, help='正则化的权重衰减系数')
+    optim_group.add_argument('--lr_scheduler', type=str, default='CosLR', help='学习率调度器类型 [PolyLR|StepLR|CosLR]')
     optim_group.add_argument('--min_lr', default=1e-6, type=float, help='PolyLR的最小学习率')
     optim_group.add_argument('--lr_drop', default=30, type=int, help='学习率在 StepLR 调度器中下降的周期间隔')
-    optim_group.add_argument('--weight_decay', default=0.01, type=float, help='正则化的权重衰减系数')
 
     # --- 早停 ---
     early_stop_group = parser.add_argument_group('Early Stopping')
@@ -105,6 +105,7 @@ def main(args):
         project="SFEG-re", 
         experiment_name=f"{os.path.basename(args.dataset_path)}-{args.optimizer}-{args.load_height}x{args.load_width}",
         description="",
+        workspace="crack_segmentation",
         config={
             'bce_weight': args.bce_weight,
             'iou_weight': args.iou_weight,
@@ -137,7 +138,6 @@ def main(args):
     log_test = get_logger(process_logs_path, 'test')
     log_eval = get_logger(process_logs_path, 'eval')
 
-
     # 设置训练设备和随机种子
     device = torch.device(args.device)
     # 后面的是为了分布式训练时每个进程的种子有差异，单进程时后面函数返回0
@@ -145,15 +145,6 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
-    # 创建模型
-    model, criterion = build_model(args)
-    model.to(device)
-    args.batch_size = args.batch_size_train
-    train_dataLoader = create_dataset(args)
-    dataset_size = len(train_dataLoader)
-    print('训练数据集大小 = %d' % dataset_size)
-    log_train.info('训练数据集大小 = %d' % dataset_size)
 
     # 是否启用早停
     early_stopper = None
@@ -170,32 +161,37 @@ def main(args):
         )
         log_train.info(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
         print(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
-
-    # 用来给AdamW优化器设置参数，可传入只需要梯度更新的参数
-    param_dicts = [
-        {
-            "params":
-                [p for n, p in model.named_parameters() if p.requires_grad],
-            "lr": args.lr,
-        },
-    ]
+    
+    # 创建模型
+    model, criterion = build_model(args)
+    model.to(device)
+    args.batch_size = args.batch_size_train
+    train_dataLoader = create_dataset(args)
+    dataset_size = len(train_dataLoader)
+    print('训练数据集大小 = %d' % dataset_size)
+    log_train.info('训练数据集大小 = %d' % dataset_size)
 
     # 设置优化器
     if args.optimizer == 'sgd':
         print('使用SGD优化器!')
-        optimizer = torch.optim.SGD(param_dicts, lr=args.lr, momentum=0.9,
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, 
+                                    momentum=0.9,
                                     weight_decay=args.weight_decay)
+    elif args.optimizer == 'adam':
+        print('使用Adam优化器!')
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
+                                     weight_decay=args.weight_decay)
     else:
         print('使用AdamW优化器!')
-        optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                       weight_decay=args.weight_decay)
     
     # 设置学习率调度器
-    if args.lr_scheduler == 'StepLR':
+    if args.lr_scheduler == 'StepLR': # 阶梯式衰减
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
-    elif args.lr_scheduler == 'CosLR':
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=30, T_mult=2, eta_min=1e-5)
-    elif args.lr_scheduler == 'PolyLR':
+    elif args.lr_scheduler == 'CosLR': # 余弦退火
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+    elif args.lr_scheduler == 'PolyLR': # 多项式衰减
         lr_scheduler = PolyLR(optimizer, eta_min=args.min_lr, begin=args.start_epoch, end=args.epochs)
     else:
         raise ValueError(f"Unsupported lr_scheduler: {args.lr_scheduler}")
@@ -215,7 +211,8 @@ def main(args):
         print("---------------------------------------------------------------------------------------")
         print("开始训练 epoch -> ", epoch)
         # 训练一个 epoch
-        train_one_epoch(model, criterion, train_dataLoader, optimizer, epoch, args, log_train)
+        SLoss = train_one_epoch(model, criterion, train_dataLoader, optimizer, epoch, args, log_train)
+        log_train.info(f"Epoch -> {epoch} | SLoss -> {SLoss} | lr -> {optimizer.param_groups[0]['lr']}")
         # 使用早停机制更新学习率
         if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
             lr_scheduler.step()
@@ -240,6 +237,7 @@ def main(args):
             for batch_idx, (data) in enumerate(test_dl):
                 x = data["image"].to(device)
                 target = data["label"].to(device)
+                target[target > 0] = 1
                 # 只需要Mask1
                 out, _, _ = model(x)
                 loss = criterion(out, target.float())
@@ -247,15 +245,17 @@ def main(args):
                 # 逐样本保存 batch 内所有图像（适配任意 batch_size）
                 B = out.shape[0]
                 for b in range(B):
+                    pred_logits = out[b, 0, ...]
+                    # 添加sigmoid激活函数，转换为概率图
+                    pred_prob = torch.sigmoid(pred_logits)
+                    threshold = 0.5
+                    pred_binary = (pred_prob > threshold).float()
+                    o = pred_binary.cpu().numpy()
+                    o_img = (o * 255.0).astype(np.uint8)
                     t = target[b, 0, ...].cpu().numpy()
-                    o = out[b, 0, ...].cpu().numpy()
+                    t_img = (t * 255.0).astype(np.uint8)
                     # 从路径里取对应文件名
                     root_name = data["A_paths"][b].split("/")[-1][0:-4]
-                    # 安全归一化，避免除以 0
-                    t_max = np.max(t) if np.max(t) > 0 else 1.0
-                    o_max = np.max(o) if np.max(o) > 0 else 1.0
-                    t_img = (255.0 * (t / t_max)).astype(np.uint8)
-                    o_img = (255.0 * (o / o_max)).astype(np.uint8)
                     
                     log_test.info('----------------------------------------------------------------------------------------------')
                     log_test.info("loss -> " + str(loss))

@@ -14,7 +14,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                      epoch: int, args = None, logger = None):
     model.train()
     criterion.train()
-
+    SLoss = 0.0
     pbar = tqdm(total=len(data_loader.dataloader), desc=f"Initial Loss: Pending")
     for i, data in enumerate(data_loader):
         samples = data['image'].to(torch.device(args.device))
@@ -25,12 +25,14 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         Mask2 = Mask2.float()
         Mask3 = Mask3.float()
 
-        # targets[targets > 0] = 1
+        targets[targets > 0] = 1
+        targets = targets.float()
 
-        STerm1 = criterion(Mask1, targets.float())
-        STerm2 = criterion(Mask2, targets.float())
-        STerm3 = criterion(Mask3, targets.float())
+        STerm1 = criterion(Mask1, targets)
+        STerm2 = criterion(Mask2, targets)
+        STerm3 = criterion(Mask3, targets)
         loss_final = STerm1 + 0.5 * STerm2 + 0.5 * STerm3
+        SLoss = SLoss + loss_final
 
         cur_time = time.strftime('%Y_%m_%d_%H:%M:%S', time.localtime(time.time()))
 
@@ -44,4 +46,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_final.backward()
         optimizer.step()
 
+    print('epoch=' + str(epoch + 1) + ', SLoss=' + str(SLoss.detach().cpu().numpy()))
     pbar.close()
+    return SLoss.detach().cpu().numpy()
