@@ -17,7 +17,7 @@ import util.misc as utils
 from engine import train_one_epoch
 from models import build_model
 from dataset import create_dataset
-from eval.evaluate import eval
+from eval.evaluate import cal_mIoU_metrics, cal_ODS_metrics, cal_OIS_metrics
 from util.logger import get_logger
 from util.early_stopping import EarlyStopping
 from util.notify import send_training_completion_notification
@@ -99,6 +99,65 @@ def get_args_parser():
 
     return parser
 
+def evaluate_online(model, data_loader, device, epoch, save_path=None):
+    if save_path:
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+    model.eval()
+    all_pred_probs = []
+    all_gt_maps = []
+    all_filenames = []
+    
+    with torch.no_grad():
+        for data in tqdm(data_loader, desc=f"Validating Epoch {epoch}"):
+            x = data["image"].to(device)
+            target = data["label"].to(device)
+            target[target > 0] = 1
+            out, _, _ = model(x)
+            pred_probs = torch.sigmoid(out)
+            all_pred_probs.extend([p.cpu() for p in pred_probs])
+            all_gt_maps.extend([g.cpu() for g in target])
+            if "A_paths" in data:
+                all_filenames.extend([Path(p).stem for p in data["A_paths"]])
+    if not all_pred_probs:
+        print("警告：评估数据为空，跳过指标计算和图片保存。")
+        return {'epoch': epoch}
+    # 转换成评估函数期望的Numpy列表格式
+    # 每个元素都是一个(H, W)的数组
+    pred_numpy_list = [(p[0].numpy() * 255).astype(np.uint8) for p in all_pred_probs]
+    gt_numpy_list = [(g[0].numpy() * 255).astype(np.uint8) for g in all_gt_maps]
+    ods_f1, ods_p, ods_r, ods_threshold = cal_ODS_metrics(pred_numpy_list, gt_numpy_list)
+    if save_path:
+        print(f"\n正在使用全局最佳阈值 {ods_threshold:.4f} 保存预测图至: {save_path}")
+        for i, (prob_tensor, gt_tensor) in enumerate(tqdm(zip(all_pred_probs, all_gt_maps), total=len(all_pred_probs), desc="Saving images")):
+            # 获取原始文件名（不含扩展名）
+            root_name = all_filenames[i] if i < len(all_filenames) else f"image_{i:04d}"
+            
+            # 将[0, 1]的概率图转换为[0, 255]的灰度图
+            prob_map_uint8 = (prob_tensor[0].numpy() * 255).astype(np.uint8)
+
+            # --- 保存预测二值图 ---
+            # 使用 ods_threshold 进行二值化
+            o_img = (prob_map_uint8 > (ods_threshold * 255)).astype(np.uint8) * 255
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_pre.png"), o_img)
+
+            # --- 保存真值图标注 ---
+            t_img = (gt_tensor[0].numpy() * 255).astype(np.uint8)
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_lab.png"), t_img)
+            
+            # --- 保存概率图 ---
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_prob.png"), prob_map_uint8)
+
+    mIoU = cal_mIoU_metrics(pred_numpy_list, gt_numpy_list)
+    ois_f1, ois_p, ois_r = cal_OIS_metrics(pred_numpy_list, gt_numpy_list)
+    
+    return {
+        'epoch': epoch, 'mIoU': mIoU,
+        'ODS_F1': ods_f1, 'ODS_P': ods_p, 'ODS_R': ods_r,
+        'OIS_F1': ois_f1, 'OIS_P': ois_p, 'OIS_R': ois_r,
+        'ODS_Threshold': ods_threshold
+    }
+
+
 def main(args):
     # 使用swanlab追踪训练
     run = swanlab.init(
@@ -127,7 +186,6 @@ def main(args):
     # 存放训练，测试，评价日志的地址
     process_logs_path = os.path.join(logs_path, cur_time + '_Dataset->' + dataset_name)
 
-    args.phase = 'train'
     if not os.path.exists(process_logs_path):
         os.makedirs(process_logs_path)
     else:
@@ -136,7 +194,7 @@ def main(args):
     # 训练，测试，评价日志
     log_train = get_logger(process_logs_path, 'train')
     log_test = get_logger(process_logs_path, 'test')
-    log_eval = get_logger(process_logs_path, 'eval')
+    log_val = get_logger(process_logs_path, 'val')
 
     # 设置训练设备和随机种子
     device = torch.device(args.device)
@@ -162,14 +220,23 @@ def main(args):
         log_train.info(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
         print(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={args.patience}")
     
+    # 创建数据集
+    # 训练集
+    args.phase = 'train'
+    args.batch_size = args.batch_size_train
+    train_dataLoader = create_dataset(args)
+    print(f'训练数据集大小 = {len(train_dataLoader)}')
+    log_train.info(f'训练数据集大小 = {len(train_dataLoader)}')
+    # 验证集
+    args.phase = 'val'
+    args.batch_size = args.batch_size_test
+    val_dataLoader = create_dataset(args)
+    print(f'验证数据集大小 = {len(val_dataLoader)}')
+    log_train.info(f'验证数据集大小 = {len(val_dataLoader)}')
+
     # 创建模型
     model, criterion = build_model(args)
     model.to(device)
-    args.batch_size = args.batch_size_train
-    train_dataLoader = create_dataset(args)
-    dataset_size = len(train_dataLoader)
-    print('训练数据集大小 = %d' % dataset_size)
-    log_train.info('训练数据集大小 = %d' % dataset_size)
 
     # 设置优化器
     if args.optimizer == 'sgd':
@@ -211,6 +278,7 @@ def main(args):
         print("---------------------------------------------------------------------------------------")
         print("开始训练 epoch -> ", epoch)
         # 训练一个 epoch
+        args.phase = 'train'
         SLoss = train_one_epoch(model, criterion, train_dataLoader, optimizer, epoch, args, log_train)
         log_train.info(f"Epoch -> {epoch} | SLoss -> {SLoss} | lr -> {optimizer.param_groups[0]['lr']}")
         # 使用早停机制更新学习率
@@ -218,94 +286,34 @@ def main(args):
             lr_scheduler.step()
         print("结束训练 epoch -> ", epoch)
         print("---------------------------------------------------------------------------------------")
+        print("开始验证 epoch -> ", epoch)
+        val_metrics = evaluate_online(model, val_dataLoader, device, epoch)
 
-        print("开始测试 epoch -> ", epoch)
-        # 保存测试数据的地址
-        results_path = cur_time + '_Dataset->' + dataset_name
-        save_root = f'{args.output_results}/{results_path}/results_' + str(epoch)
-        # 修改成测试阶段参数
-        args.phase = 'test'
-        args.batch_size = args.batch_size_test
-        test_dl = create_dataset(args)
-        pbar = tqdm(total=len(test_dl), desc=f"Initial Loss: Pending")
-
-        if not os.path.isdir(save_root):
-            os.makedirs(save_root)
-            
-        with torch.no_grad():
-            model.eval()
-            for batch_idx, (data) in enumerate(test_dl):
-                x = data["image"].to(device)
-                target = data["label"].to(device)
-                target[target > 0] = 1
-                # 只需要Mask1
-                out, _, _ = model(x)
-                loss = criterion(out, target.float())
-
-                # 逐样本保存 batch 内所有图像（适配任意 batch_size）
-                B = out.shape[0]
-                for b in range(B):
-                    pred_logits = out[b, 0, ...]
-                    # 添加sigmoid激活函数，转换为概率图
-                    pred_prob = torch.sigmoid(pred_logits)
-                    threshold = 0.5
-                    pred_binary = (pred_prob > threshold).float()
-                    o = pred_binary.cpu().numpy()
-                    o_img = (o * 255.0).astype(np.uint8)
-                    t = target[b, 0, ...].cpu().numpy()
-                    t_img = (t * 255.0).astype(np.uint8)
-                    # 从路径里取对应文件名
-                    root_name = data["A_paths"][b].split("/")[-1][0:-4]
-                    
-                    log_test.info('----------------------------------------------------------------------------------------------')
-                    log_test.info("loss -> " + str(loss))
-                    log_test.info(str(os.path.join(save_root, "{}_lab.png".format(root_name))))
-                    log_test.info(str(os.path.join(save_root, "{}_pre.png".format(root_name))))
-                    log_test.info('----------------------------------------------------------------------------------------------')
-                    cv2.imwrite(os.path.join(save_root, "{}_lab.png".format(root_name)), t_img)
-                    cv2.imwrite(os.path.join(save_root, "{}_pre.png".format(root_name)), o_img)
-
-                pbar.set_description(f"Loss: {loss.item():.4f}")
-                pbar.update(1)
-        pbar.close()
-
-        log_test.info("model -> " + str(epoch) + " test finish!")
-        log_test.info('----------------------------------------------------------------------------------------------')
-        print("结束测试 epoch -> ", epoch)
+        for key, value in val_metrics.items():
+            if isinstance(value, float):
+                print(f'Validation {key} -> {value:.4f}')
+                log_val.info(f"Epoch {epoch} | Validation {key} -> {value:.4f}")
+            swanlab.log({f'val_{key}': value, 'epoch': epoch})
+        print(f"结束验证 epoch -> {epoch}")
         print("---------------------------------------------------------------------------------------")
-
-        print("开始评估 epoch -> ", epoch)
-        metrics = eval(log_eval, save_root, epoch)
-        for key, value in metrics.items():
-            print(f'{key} -> {value}')
-            swanlab.log({f'{key}': value, 'epoch': epoch})
-        # 使用通过命令行指定的两个评价指标进行比较（例如 ODS_F1 + OIS_F1）
-        # 通过早停机制来判断是否保存模型
-        eval_val = metrics.get(args.eval_metric1, 0) + metrics.get(args.eval_metric2, 0)
+        # 使用早停或常规逻辑保存最佳模型
+        eval_val = val_metrics.get(args.eval_metric1, 0) + val_metrics.get(args.eval_metric2, 0)
         if early_stopper:
             should_stop = early_stopper(
-                current_score=eval_val,
-                epoch=epoch,
-                model=model,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                output_dir=output_dir,
-                logger=log_train,
+                current_score=eval_val, epoch=epoch, model=model, optimizer=optimizer,
+                lr_scheduler=lr_scheduler, output_dir=output_dir, logger=log_train,
                 extra_save_info={'args': args}
             )
-
             if early_stopper.best_epoch == epoch:
-                max_Metrics = metrics
-                max_Metrics['epoch'] = epoch
+                max_Metrics = val_metrics
             if should_stop:
                 print("早停条件已满足，训练提前结束。")
                 log_train.info("早停条件已满足，训练提前结束。")
-                break # 退出训练循环
-        else:
-            if 'epoch' not in max_Metrics or eval_val > (max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)):
-                max_Metrics = metrics
-                max_Metrics['epoch'] = epoch
-                # 保存最佳模型
+                break
+        else: # 无早停时的逻辑
+            current_max_val = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
+            if eval_val > current_max_val:
+                max_Metrics = val_metrics
                 checkpoint_path = output_dir / 'checkpoint_best.pth'
                 utils.save_on_master({
                     'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
@@ -314,30 +322,50 @@ def main(args):
                 log_train.info(f"\n更新并保存最佳模型 -> {epoch}")
                 print(f"\n更新并保存最佳模型 -> {epoch}")
 
-        print("结束评估 epoch -> ", epoch)
-        # 根据选择的评价指标格式化输出：若为 mIoU 单指标，则显示 max_mIoU；
-        # 若为其他组合（例如 ODS+OIS），则显示组合名及其相加的值
-        if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
-            print('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
-        else:
-            combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
-            combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
-            print(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
-        print("---------------------------------------------------------------------------------------")
+    print("---------------------------------------------------------------------------------------")
 
-        log_eval.info("evalauting epoch finish -> " + str(epoch))
-        if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
-            log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
-        else:
-            combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
-            combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
-            log_eval.info(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
-        log_eval.info("---------------------------------------------------------------------------------------")
+    print("开始最终测试... 加载最佳模型...")
+    log_test.info("开始最终测试... 加载最佳模型...")
+    final_test_metrics = {}
+    best_model_path = output_dir / 'checkpoint_best.pth'
+    if best_model_path.exists():
+        checkpoint = torch.load(best_model_path, map_location='cpu')
+        model.load_state_dict(checkpoint['model'])
+        best_epoch = checkpoint['epoch']
+        print(f"已加载 Epoch {best_epoch} 的最佳模型。")
+        log_test.info(f"已加载 Epoch {best_epoch} 的最佳模型。")
+        final_results_path = Path(args.output_results) / f"{cur_time}_Dataset->{dataset_name}"
+        
+        # 创建测试集
+        args.phase = 'test'
+        args.batch_size = args.batch_size_test
+        test_dataLoader = create_dataset(args)
+        print(f"测试数据集大小 = {len(test_dataLoader)}")
+        log_test.info(f"测试数据集大小 = {len(test_dataLoader)}")
+        # 在测试集上进行最终评估
+        final_test_metrics = evaluate_online(
+            model=model, 
+            data_loader=test_dataLoader, 
+            device=device, 
+            epoch=best_epoch,
+            save_path=final_results_path
+        )
+        
+        print("\n--- 最终模型在测试集上的性能 ---")
+        log_test.info("\n--- 最终模型在测试集上的性能 ---")
+        for key, value in final_test_metrics.items():
+            if isinstance(value, float):
+                print(f'Test {key} -> {value:.4f}')
+                log_test.info(f'Test {key} -> {value:.4f}')
+    else:
+        print("未找到最佳模型文件，跳过最终测试。")
+        log_test.warning("未找到最佳模型文件，跳过最终测试。")
+    print("---------------------------------------------------------------------------------------")
 
-    # Autodl 训练时可以使用以下代码实现结束后的微信通知
+    # Autodl 训练完成通知（使用最终测试集得分）
     # send_training_completion_notification(
-    #     final_metrics=max_Metrics,
-    #     dataset_name=args.dataset_name,
+    #     final_metrics=final_test_metrics,
+    #     dataset_name=dataset_name,
     #     early_stopper=early_stopper,
     #     total_epochs=args.epochs,
     #     eval_metric1=args.eval_metric1,
@@ -346,16 +374,12 @@ def main(args):
 
     # 把最佳评价得分写入日志
     for key, value in max_Metrics.items():
-        log_eval.info(str(key) + ' -> ' + str(value))
-        print(str(key) + ' -> ' + str(value))
-    log_eval.info("---------------------------------------------------------------------------------------")
-    if args.eval_metric1 == 'mIoU' and args.eval_metric2 == 'mIoU':
-        log_eval.info('\nmax_mIoU -> ' + str(max_Metrics['mIoU']) + '\nmax Epoch -> ' + str(max_Metrics['epoch']))
-    else:
-        combo_name = f"{args.eval_metric1}+{args.eval_metric2}"
-        combo_value = max_Metrics.get(args.eval_metric1, 0) + max_Metrics.get(args.eval_metric2, 0)
-        log_eval.info(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
-        print(f"\nmax_{combo_name} -> {combo_value}\nmax Epoch -> " + str(max_Metrics['epoch']))
+        if isinstance(value, float):
+            print(f'Best Validation {key} -> {value:.4f}')
+            log_val.info(f'Best Validation {key} -> {value:.4f}')
+        else:
+            print(f'Best Validation Epoch -> {value}')
+            log_val.info(f'Best Validation Epoch -> {value}')
 
     print("---------------------------------------------------------------------------------------")
     # 打印早停总结
@@ -373,11 +397,15 @@ def main(args):
         print(summary_str)
         log_train.info(summary_str)
         print("---------------------------------------------------------------------------------------")
+        
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    print(f'\n总训练时间为 {total_time_str}')
+    log_train.info(f'总训练时间为 {total_time_str}')
+    
     # 将训练配置参数记录到日志里
+    log_train.info('--- 最终使用的训练配置 ---')
     log_train.info(f'args -> {str(args)}')
-    log_train.info('使用配置为：')
     log_train.info(f'bce_weight -> {args.bce_weight}')
     log_train.info(f'iou_weight -> {args.iou_weight}')
     log_train.info(f'数据集 -> {args.dataset_path}')
