@@ -44,7 +44,7 @@ def get_args_parser():
     # 用于autodl
     # dataset_group.add_argument('--dataset_path', default="/root/autodl-tmp/data/CRACK500", help='数据集的根目录')
     # 用于本地      
-    dataset_group.add_argument('--dataset_path', default="data/DeepCrack", help='数据集的目录')
+    dataset_group.add_argument('--dataset_path', default="data/CRACK500", help='数据集的目录')
     dataset_group.add_argument('--dataset_mode', type=str, default='crack', help='数据集类型')
     dataset_group.add_argument('--load_width', type=int, default=256, help='输入图像的宽度以进行预处理（将被调整大小）')
     dataset_group.add_argument('--load_height', type=int, default=256, help='输入图像的高度以进行预处理（将被调整大小）')
@@ -362,21 +362,12 @@ def main(args):
         log_test.warning("未找到最佳模型文件，跳过最终测试。")
     print("---------------------------------------------------------------------------------------")
 
-    # Autodl 训练完成通知（使用最终测试集得分）
-    # send_training_completion_notification(
-    #     final_metrics=final_test_metrics,
-    #     dataset_name=dataset_name,
-    #     early_stopper=early_stopper,
-    #     total_epochs=args.epochs,
-    #     eval_metric1=args.eval_metric1,
-    #     eval_metric2=args.eval_metric2
-    # )
-
     # 把最佳评价得分写入日志
     for key, value in max_Metrics.items():
         if isinstance(value, float):
             print(f'Best Validation {key} -> {value:.4f}')
             log_val.info(f'Best Validation {key} -> {value:.4f}')
+            swanlab.log({f'{key}': value})
         else:
             print(f'Best Validation Epoch -> {value}')
             log_val.info(f'Best Validation Epoch -> {value}')
@@ -420,6 +411,16 @@ def main(args):
 
     print('训练时间为 {}'.format(total_time_str))
     log_train.info('训练时间为 {}'.format(total_time_str))
+
+    # Autodl 训练完成通知（使用最终测试集得分）
+    # send_training_completion_notification(
+    #     final_metrics=final_test_metrics,
+    #     dataset_name=dataset_name,
+    #     early_stopper=early_stopper,
+    #     total_epochs=args.epochs,
+    #     eval_metric1=args.eval_metric1,
+    #     eval_metric2=args.eval_metric2
+    # )
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('SFEG', parents=[get_args_parser()])
