@@ -52,11 +52,11 @@ def cal_ODS_metrics(pred_list, gt_list, thresh_step=0.01):
         p = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
         r = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
         f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
-        metrics_by_thresh.append({'f1': f1, 'p': p, 'r': r})
+        metrics_by_thresh.append({'f1': f1, 'p': p, 'r': r, 'thresh': thresh})
 
     # 找到F1分数最高的指标
     best_metrics = max(metrics_by_thresh, key=lambda x: x['f1'])
-    return best_metrics['f1'], best_metrics['p'], best_metrics['r']
+    return best_metrics['f1'], best_metrics['p'], best_metrics['r'], best_metrics['thresh']
 
 def cal_OIS_metrics(pred_list, gt_list, thresh_step=0.01):
     """计算OIS指标: 单图最优阈值的平均F1, P, R"""
