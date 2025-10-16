@@ -36,8 +36,8 @@ def get_args_parser():
 
     # --- 模型评价指标 ---
     metric_eval = parser.add_argument_group('Metrics')
-    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS_F1'], default='mIoU', type=str, help='更新模型参考的评价指标1')
-    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS_F1'], default='mIoU', type=str, help='更新模型参考的评价指标2')
+    metric_eval.add_argument('--eval_metric1', choices=['mIoU', 'ODS_F1'], default='ODS_F1', type=str, help='更新模型参考的评价指标1')
+    metric_eval.add_argument('--eval_metric2', choices=['mIoU', 'OIS_F1'], default='OIS_F1', type=str, help='更新模型参考的评价指标2')
 
     # --- 数据集 / 输入 ---
     dataset_group = parser.add_argument_group('Dataset / Input')
