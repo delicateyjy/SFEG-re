@@ -3,6 +3,9 @@ import os
 import logging
 import glob
 import cv2
+import torch
+from tqdm import tqdm
+from pathlib import Path
 
 def get_statistics(pred, gt):
     """计算单张图像的TP, FP, FN"""
@@ -145,6 +148,52 @@ def eval(log_eval, results_dir, epoch):
         'OIS_F1': ois_f1,
         'OIS_P': ois_p,
         'OIS_R': ois_r,
+    }
+
+def evaluate_online(model, data_loader, device, epoch, save_path=None, model_outputs_logits=True):
+    if save_path:
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+    model.eval()
+    all_pred_probs = []
+    all_gt_maps = []
+    all_filenames = []
+    with torch.no_grad():
+        for data in tqdm(data_loader, desc=f"Validating Epoch {epoch + 1}"):
+            x = data["image"].to(device)
+            target = data["label"].to(device)
+            raw_output = model(x)
+            if model_outputs_logits:
+                pred_probs = torch.sigmoid(raw_output)
+            else:
+                pred_probs = raw_output
+            target[target > 0] = 1
+            all_pred_probs.extend([p.cpu() for p in pred_probs])
+            all_gt_maps.extend([g.cpu() for g in target])
+            if "A_paths" in data:
+                all_filenames.extend([Path(p).stem for p in data["A_paths"]])
+    if not all_pred_probs:
+        print("警告：评估数据为空，跳过指标计算和图片保存。")
+        return {'epoch': epoch + 1}
+    pred_numpy_list = [(p[0].numpy() * 255) for p in all_pred_probs]
+    gt_numpy_list = [(g[0].numpy() * 255) for g in all_gt_maps]
+    mIoU = cal_mIoU_metrics(pred_numpy_list, gt_numpy_list)
+    ods_f1, ods_p, ods_r, ods_threshold = cal_ODS_metrics(pred_numpy_list, gt_numpy_list)
+    ois_f1, ois_p, ois_r = cal_OIS_metrics(pred_numpy_list, gt_numpy_list)
+    if save_path:
+        print(f"\n正在使用全局最佳阈值 {ods_threshold:.4f} 保存预测图至: {save_path}")
+        for i in tqdm(range(len(pred_numpy_list)), desc="Saving images"):
+            root_name = all_filenames[i] if i < len(all_filenames) else f"image_{i:04d}"
+            prob_map_uint8 = (pred_numpy_list[i]).astype(np.uint8)
+            binary_map_uint8 = (prob_map_uint8 > (ods_threshold * 255)).astype(np.uint8) * 255
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_pre.png"), binary_map_uint8)
+            gt_map_uint8 = (gt_numpy_list[i]).astype(np.uint8)
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_lab.png"), gt_map_uint8)
+            cv2.imwrite(os.path.join(save_path, f"{root_name}_prob.png"), prob_map_uint8)
+    return {
+        'epoch': epoch + 1, 'mIoU': mIoU,
+        'ODS_F1': ods_f1, 'ODS_P': ods_p, 'ODS_R': ods_r,
+        'OIS_F1': ois_f1, 'OIS_P': ois_p, 'OIS_R': ois_r,
+        'ODS_Threshold': ods_threshold
     }
 
 if __name__ == '__main__':
