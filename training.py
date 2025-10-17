@@ -8,6 +8,7 @@ import argparse
 import os
 import logging
 import datetime
+import random
 
 
 from dataset import create_dataset
@@ -19,13 +20,14 @@ import util.misc as utils
 # 导入模型和损失函数
 from CrackDection.Crackformer2 import crackformer2, crackformer2_loss
 from CrackDection.CDSNet import CDSNET, exfloss
+from CrackDection.CTCrackSeg import CTCrackSeg, DiceBCELoss
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # 设置参数
 parser = argparse.ArgumentParser('crackdection')
-parser.add_argument('--train_model', type=str, choices=['crackformer2', 'cdsnet', 'ctcrackseg'], default='cdsnet')
-parser.add_argument('--dataset_path', default="/home/lab/Code/data/DeepCrack")
+parser.add_argument('--train_model', type=str, choices=['crackformer2', 'cdsnet', 'ctcrackseg'], default='crackformer2')
+parser.add_argument('--dataset_path', default="/home/lab/Code/data/CRACK500")
 parser.add_argument('--dataset_mode', type=str, default='crack')
 parser.add_argument('--load_width', type=int, default=512)
 parser.add_argument('--load_height', type=int, default=512)
@@ -50,10 +52,11 @@ elif args.train_model.lower() == 'cdsnet':
     args.epochs = 100
 elif args.train_model.lower() == 'ctcrackseg':
     # CTCrackSeg
-    # model, criterion = CTCrackSeg().to(device), CTCrackSeg_loss().to(device)
-    # optimizer = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
-    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 50, 100], gamma=0.1)
-    args.epochs = 5
+    model, criterion = CTCrackSeg().to(device), DiceBCELoss().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=6)
+    args.epochs = 100
+    args.batch_size = 2
 else:
     raise ValueError(f"未知的模型类型: {args.train_model}")
 
@@ -81,6 +84,7 @@ log.info(f'训练数据集大小 = {len(train_dataLoader)}')
 
 # 创建验证集
 args.phase = 'val'
+args.batch_size = 1  # 验证时batch size均设为1
 val_dataLoader = create_dataset(args)
 print(f'验证数据集大小 = {len(val_dataLoader)}')
 log.info(f'验证数据集大小 = {len(val_dataLoader)}')
@@ -107,6 +111,13 @@ log.info(f"早停机制已启用: 监控 '{monitor_name}', 耐心值={early_stop
 
 start_time = time.time()
 max_Metrics = {'epoch': -1, 'mIoU': 0, 'ODS_F1': 0, 'ODS_P': 0, 'ODS_R': 0, 'OIS_F1': 0, 'OIS_P': 0, 'OIS_R': 0}
+
+# 添加种子
+args.seed = 42
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+random.seed(args.seed)
+
 
 swanlab.init(
     project="CrackDection",
