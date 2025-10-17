@@ -9,7 +9,7 @@ import os
 import logging
 import datetime
 import random
-
+import ml_collections
 
 from dataset import create_dataset
 from util.logger import get_logger
@@ -21,25 +21,27 @@ import util.misc as utils
 from CrackDection.Crackformer2 import crackformer2, crackformer2_loss
 from CrackDection.CDSNet import CDSNET, exfloss
 from CrackDection.CTCrackSeg import CTCrackSeg, DiceBCELoss
+from CrackDection.UCtransNet import UCTransNet, WeightedDiceBCE
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # 设置参数
 parser = argparse.ArgumentParser('crackdection')
-parser.add_argument('--train_model', type=str, choices=['crackformer2', 'cdsnet', 'ctcrackseg'], default='crackformer2')
-parser.add_argument('--dataset_path', default="/home/lab/Code/data/CRACK500")
+parser.add_argument('--train_model', type=str, choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet'], default='CDSNet')
+parser.add_argument('--dataset_path', default="/home/lab/Code/data/TUT")
 parser.add_argument('--dataset_mode', type=str, default='crack')
 parser.add_argument('--load_width', type=int, default=512)
 parser.add_argument('--load_height', type=int, default=512)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_threads', type=int, default=0)
 parser.add_argument('--serial_batches', type=bool, default=False)
+parser.add_argument('--patience', type=int, default=20)
 
 args = parser.parse_args()
 
 # 创建不同模型以及对应的配置
 if args.train_model.lower() == 'crackformer2':
-    # crackformer2
+    # Crackformer2
     model, criterion = crackformer2().to(device), crackformer2_loss().to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 50, 100], gamma=0.1)
@@ -57,6 +59,29 @@ elif args.train_model.lower() == 'ctcrackseg':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=6)
     args.epochs = 100
     args.batch_size = 2
+elif args.train_model.lower() == 'uctransnet':
+    # UCTransNet
+    def get_CTranS_config():
+        config = ml_collections.ConfigDict()
+        config.transformer = ml_collections.ConfigDict()
+        config.KV_size = 960  # KV_size = Q1 + Q2 + Q3 + Q4
+        config.transformer.num_heads = 4
+        config.transformer.num_layers = 4
+        config.expand_ratio = 4  # MLP channel dimension expand ratio
+        config.transformer.embeddings_dropout_rate = 0.1
+        config.transformer.attention_dropout_rate = 0.1
+        config.transformer.dropout_rate = 0
+        config.patch_sizes = [16, 8, 4, 2]
+        config.base_channel = 64  # base channel of U-Net
+        config.n_classes = 1
+        return config
+    config_vit = get_CTranS_config()
+    model = UCTransNet(config_vit,n_channels=3,n_classes=1).to(device)
+    criterion = WeightedDiceBCE(dice_weight=0.5,BCE_weight=0.5)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-4)
+    args.epochs = 300
+    args.patience = 50
 else:
     raise ValueError(f"未知的模型类型: {args.train_model}")
 
@@ -98,7 +123,7 @@ log.info(f'测试数据集大小 = {len(test_dataLoader)}')
 # 早停
 monitor_name = 'ODS_F1+OIS_F1'
 early_stopper = EarlyStopping(
-    patience=20,
+    patience=args.patience,
     min_delta=0.0005,
     monitor=monitor_name,
     lr_patience=10,
