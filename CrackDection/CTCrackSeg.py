@@ -2,11 +2,14 @@
 损失函数为DiceBCELoss，训练时总损失为0.8xDiceBCE(Mask, label)+0.2xDiceBCE(Boundary, boundary_label)
 因为我们的数据集没有boundary_label，所以训练时只用Mask计算损失
 原作者输入图片为256x256，现改为512x512
+512x512有点太占显存了，使用256x256试试
 训练时输出两张图，一个是预测图，一个是边界图（已添加sigmoid）
 训练时输出的边界图参与损失的计算，是根据最低损失决定保存新模型（原训练框架可能需要为此添加大量代码）
 保存最佳模型时依旧使用我们的ODS_F1+OIS_F1作为评价指标
 这篇论文就5页，我嘞个豆
 这个模型需要的显存有点大，本地的11G的不够，只能用Autodl的了
+没办法了，256x256都需要快8G显存，512x512就需要翻4倍，要快30G显存，后面看情况租显存更大的服务器吧
+先看下256x256的模型效果
 """
 import torch
 import torch.nn as nn
@@ -486,14 +489,18 @@ class DiceBCELoss(nn.Module):
 
 # test
 def test():
-    x = torch.randn((1, 3, 512, 512))  # batch size, channel,height,width
+    x = torch.randn((1, 3, 256, 256)).cuda()  # batch size, channel,height,width
 
-    model = CTCrackSeg()
+    model = CTCrackSeg().cuda()
     flops, params = profile(model, (x,))
     print('flops: %.2f G, params: %.2f M' % (flops / 1e9, params / 1e6))
     preds = model(x)
     print(x.shape)
     print(preds.shape)
+
+# flops: 39.47 G, params: 22.88 M
+# torch.Size([1, 3, 256, 256])
+# torch.Size([1, 1, 256, 256])
 
 # flops: 163.33 G, params: 22.88 M
 # torch.Size([1, 3, 512, 512])

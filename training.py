@@ -26,8 +26,8 @@ parser = argparse.ArgumentParser('crackdection')
 parser.add_argument('--train_model', type=str, choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet'], default='CTCrackSeg')
 parser.add_argument('--dataset_path', default="/home/lab/Code/data/CrackMap")
 parser.add_argument('--dataset_mode', type=str, default='crack')
-parser.add_argument('--load_width', type=int, default=512)
-parser.add_argument('--load_height', type=int, default=512)
+parser.add_argument('--load_width', type=int, default=256)
+parser.add_argument('--load_height', type=int, default=256)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_threads', type=int, default=0)
 parser.add_argument('--serial_batches', type=bool, default=False)
@@ -55,10 +55,9 @@ elif args.train_model.lower() == 'ctcrackseg':
     from CrackDection.CTCrackSeg import CTCrackSeg, DiceBCELoss
     model, criterion = CTCrackSeg().to(device), DiceBCELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=6)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.5, patience=6)
     args.epochs = 100
-    args.batch_size = 2
-    args.patience = 6
+    args.batch_size = 2 # 原作者使用的2，跑不通，尝试改为1，仍然跑不通，只能用Autodl了
 elif args.train_model.lower() == 'uctransnet':
     # UCTransNet
     from CrackDection.UCtransNet import UCTransNet, WeightedDiceBCE
@@ -198,8 +197,9 @@ for epoch in range(args.epochs):
     train_bar.close()
 
     # 早停判断是否更新学习率
-    if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
-        scheduler.step()
+    # 训练CTCrackSeg时，调度器放在验证阶段
+    # if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
+    #     scheduler.step()
 
     # 每个epoch后进行验证
     print(f'---------------------- 第 {epoch + 1} 轮验证 ----------------------')
@@ -211,7 +211,7 @@ for epoch in range(args.epochs):
             print(f'Validation {key} -> {value:.4f}')
             log.info(f"Epoch {epoch} | Validation {key} -> {value:.4f}")
         swanlab.log({f'val_{key}': value, 'epoch': epoch})
-    swanlab.log({'current_lr': scheduler.get_last_lr()[0], 'epoch': epoch})
+    swanlab.log({'current_lr': optimizer.param_groups[0]['lr'], 'epoch': epoch})
     
     # 随机抽一张图像进行可视化并上传swanlab
     vis_data = next(iter(val_dataLoader))
@@ -225,6 +225,10 @@ for epoch in range(args.epochs):
 
     # 使用早停保存模型参数
     eval_val = val_metrics.get('ODS_F1', 0) + val_metrics.get('OIS_F1', 0)
+
+    # 训练CTCrackSeg时，调度器放在验证阶段，其他模型将以下代码注释
+    scheduler.step(eval_val)
+
     if early_stopper:
         should_stop = early_stopper(
             current_score=eval_val, epoch=epoch, model=model, optimizer=optimizer,
