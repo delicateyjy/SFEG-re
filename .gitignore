@@ -17,6 +17,7 @@ __pycache__/
 results/
 logs/
 checkpoints/
+output/
 *.jpg
 *.png
 
