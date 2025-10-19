@@ -1,15 +1,137 @@
 """
-损失函数为DiceBCELoss（用于验证模型并保存模型），训练时不是用该损失函数
+损失函数为DiceBCELoss，训练时总损失为0.8xDiceBCE(Mask, label)+0.2xDiceBCE(Boundary, boundary_label)
+因为我们的数据集没有boundary_label，所以训练时只用Mask计算损失
 原作者输入图片为256x256，现改为512x512
 训练时输出两张图，一个是预测图，一个是边界图（已添加sigmoid）
 训练时输出的边界图参与损失的计算，是根据最低损失决定保存新模型（原训练框架可能需要为此添加大量代码）
+保存最佳模型时依旧使用我们的ODS_F1+OIS_F1作为评价指标
 这篇论文就5页，我嘞个豆
+这个模型需要的显存有点大，本地的11G的不够，只能用Autodl的了
 """
 import torch
-from torch import nn
+import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from thop import profile
+
+def conv_1x1_bn(inp, oup):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.SiLU()
+    )
+
+
+def conv_nxn_bn(inp, oup, kernal_size=3, stride=1):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, kernal_size, stride, 1, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.SiLU()
+    )
+
+
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return self.fn(self.norm(x), **kwargs)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class Attention(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
+        super().__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.attend = nn.Softmax(dim=-1)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
+
+    def forward(self, x):
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b p n (h d) -> b p h n d', h=self.heads), qkv)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        attn = self.attend(dots)
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b p h n d -> b p n (h d)')
+        return self.to_out(out)
+
+
+class Transformer(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                PreNorm(dim, Attention(dim, heads, dim_head, dropout)),
+                PreNorm(dim, FeedForward(dim, mlp_dim, dropout))
+            ]))
+
+    def forward(self, x):
+        for attn, ff in self.layers:
+            x = attn(x) + x
+            x = ff(x) + x
+        return x
+
+
+class MobileViTBlock(nn.Module):
+    def __init__(self, dim, depth, channel, kernel_size, patch_size, mlp_dim, dropout=0.):
+        super().__init__()
+        self.ph, self.pw = patch_size
+
+        self.conv1 = conv_nxn_bn(channel, channel, kernel_size)
+        self.conv2 = conv_1x1_bn(channel, dim)
+
+        self.transformer = Transformer(dim, depth, 4, 8, mlp_dim, dropout)
+
+        self.conv3 = conv_1x1_bn(dim, channel)
+        self.conv4 = conv_nxn_bn(2 * channel, channel, kernel_size)
+
+    def forward(self, x):
+        y = x.clone()
+
+        # Local representations
+        x = self.conv1(x)
+        x = self.conv2(x)
+
+        # Global representations
+        _, _, h, w = x.shape
+        x = rearrange(x, 'b d (h ph) (w pw) -> b (ph pw) (h w) d', ph=self.ph, pw=self.pw)
+        x = self.transformer(x)
+        x = rearrange(x, 'b (ph pw) (h w) d -> b d (h ph) (w pw)', h=h // self.ph, w=w // self.pw, ph=self.ph,
+                      pw=self.pw)
+
+        # Fusion
+        x = self.conv3(x)
+        x = torch.cat((x, y), 1)
+        x = self.conv4(x)
+        return x
 
 class DeformConv2d(nn.Module):
     def __init__(self, inc, outc, kernel_size=3, padding=1, stride=1, bias=None, modulation=False):
@@ -153,124 +275,6 @@ class DeformConv2d(nn.Module):
 
         return x_offset
 
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.SiLU()
-    )
-
-
-def conv_nxn_bn(inp, oup, kernal_size=3, stride=1):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, kernal_size, stride, 1, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.SiLU()
-    )
-
-
-class PreNorm(nn.Module):
-    def __init__(self, dim, fn):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.fn = fn
-    
-    def forward(self, x, **kwargs):
-        return self.fn(self.norm(x), **kwargs)
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout=0.):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
-        )
-    
-    def forward(self, x):
-        return self.net(x)
-
-
-class Attention(nn.Module):
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
-        super().__init__()
-        inner_dim = dim_head *  heads
-        project_out = not (heads == 1 and dim_head == dim)
-
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-
-        self.attend = nn.Softmax(dim = -1)
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
-
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
-
-    def forward(self, x):
-        qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda t: rearrange(t, 'b p n (h d) -> b p h n d', h = self.heads), qkv)
-
-        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-        attn = self.attend(dots)
-        out = torch.matmul(attn, v)
-        out = rearrange(out, 'b p h n d -> b p n (h d)')
-        return self.to_out(out)
-
-
-class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
-        super().__init__()
-        self.layers = nn.ModuleList([])
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim, heads, dim_head, dropout)),
-                PreNorm(dim, FeedForward(dim, mlp_dim, dropout))
-            ]))
-    
-    def forward(self, x):
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
-        return x
-
-
-class MobileViTBlock(nn.Module):
-    def __init__(self, dim, depth, channel, kernel_size, patch_size, mlp_dim, dropout=0.):
-        super().__init__()
-        self.ph, self.pw = patch_size
-
-        self.conv1 = conv_nxn_bn(channel, channel, kernel_size)
-        self.conv2 = conv_1x1_bn(channel, dim)
-
-        self.transformer = Transformer(dim, depth, 4, 8, mlp_dim, dropout)
-
-        self.conv3 = conv_1x1_bn(dim, channel)
-        self.conv4 = conv_nxn_bn(2 * channel, channel, kernel_size)
-    
-    def forward(self, x):
-        y = x.clone()
-
-        # Local representations
-        x = self.conv1(x)
-        x = self.conv2(x)
-        
-        # Global representations
-        _, _, h, w = x.shape
-        x = rearrange(x, 'b d (h ph) (w pw) -> b (ph pw) (h w) d', ph=self.ph, pw=self.pw)
-        x = self.transformer(x)
-        x = rearrange(x, 'b (ph pw) (h w) d -> b d (h ph) (w pw)', h=h//self.ph, w=w//self.pw, ph=self.ph, pw=self.pw)
-
-        # Fusion
-        x = self.conv3(x)
-        x = torch.cat((x, y), 1)
-        x = self.conv4(x)
-        return x
-    
 def shortcut(in_channels, out_channels, stride=1):
     return nn.Sequential(
         nn.Conv2d(in_channels, out_channels, 1, stride, 0, bias=False),
@@ -295,9 +299,11 @@ class DUC(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, padding=1, kernel_size=3, stride=1, with_nonlinearity=True, dilation=1):
+    def __init__(self, in_channels, out_channels, padding=1, kernel_size=3, stride=1, with_nonlinearity=True,
+                 dilation=1):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, padding=padding, kernel_size=kernel_size, stride=stride, dilation=dilation)
+        self.conv = nn.Conv2d(in_channels, out_channels, padding=padding, kernel_size=kernel_size, stride=stride,
+                              dilation=dilation)
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU()
         self.with_nonlinearity = with_nonlinearity
@@ -308,33 +314,33 @@ class ConvBlock(nn.Module):
         if self.with_nonlinearity:
             x = self.relu(x)
         return x
-    
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.hdc = nn.Sequential(
-                ConvBlock(in_channels, out_channels, padding=1, dilation=1),
-                ConvBlock(out_channels, out_channels, padding=2, dilation=2),
-                ConvBlock(out_channels, out_channels, padding=5, dilation=5, with_nonlinearity=False)
-            )
+            ConvBlock(in_channels, out_channels, padding=1, dilation=1),
+            ConvBlock(out_channels, out_channels, padding=2, dilation=2),
+            ConvBlock(out_channels, out_channels, padding=5, dilation=5, with_nonlinearity=False)
+        )
         self.shortcut = shortcut(in_channels, out_channels) if in_channels != out_channels else nn.Identity()
         self.relu = nn.ReLU()
         self.se = SE_Block(c=out_channels)
 
     def forward(self, x):
         res = self.shortcut(x)
-        x   = self.se(self.hdc(x))
-        x   = self.relu(res + x)
+        x = self.se(self.hdc(x))
+        x = self.relu(res + x)
         return x
 
 
 class DownBlockwithVit(nn.Module):
-    def __init__(self, in_channels, out_channels, dim, L, kernel_size=3, patch_size=(4,4)):
+    def __init__(self, in_channels, out_channels, dim, L, kernel_size=3, patch_size=(4, 4)):
         super().__init__()
-        self.downsample = nn.MaxPool2d(2,2)
-        self.convblock  = ResidualBlock(in_channels, out_channels)
-        self.vitblock   = MobileViTBlock(dim, L, out_channels, kernel_size, patch_size, int(dim*2))
+        self.downsample = nn.MaxPool2d(2, 2)
+        self.convblock = ResidualBlock(in_channels, out_channels)
+        self.vitblock = MobileViTBlock(dim, L, out_channels, kernel_size, patch_size, int(dim * 2))
 
     def forward(self, x):
         x = self.downsample(x)
@@ -346,7 +352,7 @@ class DownBlockwithVit(nn.Module):
 class Bridge(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.downsample = nn.MaxPool2d(2,2)
+        self.downsample = nn.MaxPool2d(2, 2)
         self.bridge = ResidualBlock(in_channels, out_channels)
 
     def forward(self, x):
@@ -356,14 +362,14 @@ class Bridge(nn.Module):
 class UpBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.upsample = DUC(in_channels, in_channels*2)
+        self.upsample = DUC(in_channels, in_channels * 2)
         self.residualblock = ResidualBlock(in_channels, out_channels)
 
     def forward(self, up_x, down_x):
         x = self.upsample(up_x)
         x = torch.cat([x, down_x], 1)
         x = self.residualblock(x)
-        return x    
+        return x
 
 
 class SE_Block(nn.Module):
@@ -383,13 +389,12 @@ class SE_Block(nn.Module):
         y = self.excitation(y).view(bs, c, 1, 1)
         x = x * y.expand_as(x)
         return x
-    
 
-# class TransMUNet(nn.Module):
+
 class CTCrackSeg(nn.Module):
     DEPTH = 4
 
-    def __init__(self, n_classes=1, dims = [144, 240, 320]):
+    def __init__(self, n_classes=1, dims=[144, 240, 320]):
         super().__init__()
 
         self.n_classes = n_classes
@@ -398,25 +403,25 @@ class CTCrackSeg(nn.Module):
         up_blocks = []
 
         down_blocks.append(ResidualBlock(in_channels=3, out_channels=32))
-        down_blocks.append(DownBlockwithVit(in_channels=32,  out_channels=64,  dim=dims[0], L=2)) 
-        down_blocks.append(DownBlockwithVit(in_channels=64,  out_channels=128, dim=dims[1], L=4))
+        down_blocks.append(DownBlockwithVit(in_channels=32, out_channels=64, dim=dims[0], L=2))
+        down_blocks.append(DownBlockwithVit(in_channels=64, out_channels=128, dim=dims[1], L=4))
         down_blocks.append(DownBlockwithVit(in_channels=128, out_channels=256, dim=dims[2], L=3))
 
         self.down_blocks = nn.ModuleList(down_blocks)
 
         self.bridge = Bridge(256, 512)
 
-        up_blocks.append(UpBlock(in_channels=256*2, out_channels=256))
-        up_blocks.append(UpBlock(in_channels=128*2, out_channels=128))
-        up_blocks.append(UpBlock(in_channels=64*2,  out_channels=64 ))
-        up_blocks.append(UpBlock(in_channels=32*2,  out_channels=32 ))
-        
+        up_blocks.append(UpBlock(in_channels=256 * 2, out_channels=256))
+        up_blocks.append(UpBlock(in_channels=128 * 2, out_channels=128))
+        up_blocks.append(UpBlock(in_channels=64 * 2, out_channels=64))
+        up_blocks.append(UpBlock(in_channels=32 * 2, out_channels=32))
+
         self.up_blocks = nn.ModuleList(up_blocks)
 
-        self.se  = SE_Block(c=32,r=4)
+        self.se = SE_Block(c=32, r=4)
 
         self.boundary = nn.Sequential(DeformConv2d(32, 32, modulation=True),
-                                      nn.BatchNorm2d(32), nn.ReLU(), 
+                                      nn.BatchNorm2d(32), nn.ReLU(),
                                       nn.Conv2d(32, 1, kernel_size=1, stride=1, bias=False))
 
         self.out = nn.Conv2d(32, n_classes, kernel_size=1, stride=1)
@@ -433,7 +438,7 @@ class CTCrackSeg(nn.Module):
 
         # boundary enhancement moudel(BEM)
         stage1 = stages[f"layer_1"]
-        B_out  = self.boundary(stage1)
+        B_out = self.boundary(stage1)
         stages[f"layer_1"] = stage1 + B_out.repeat_interleave(int(stage1.shape[1]), dim=1)
 
         x = self.bridge(x)
@@ -441,7 +446,7 @@ class CTCrackSeg(nn.Module):
         # decoder
         for i, block in enumerate(self.up_blocks, 1):
             key = f"layer_{CTCrackSeg.DEPTH + 1 - i}"
-            x   = block(x, stages[key])
+            x = block(x, stages[key])
 
         x = self.se(x)
         x = self.out(x)
@@ -454,7 +459,7 @@ class CTCrackSeg(nn.Module):
         if istrain:
             return x, B_out
         else:
-            return x    
+            return x
         
 class DiceBCELoss(nn.Module):
     def __init__(self):
@@ -479,10 +484,11 @@ class DiceBCELoss(nn.Module):
         
         return Dice_BCE
 
+# test
 def test():
-    x = torch.randn((1, 3, 512, 512)).cuda()  # batch size, channel,height,width
+    x = torch.randn((1, 3, 512, 512))  # batch size, channel,height,width
 
-    model = CTCrackSeg(n_classes=1).cuda()
+    model = CTCrackSeg()
     flops, params = profile(model, (x,))
     print('flops: %.2f G, params: %.2f M' % (flops / 1e9, params / 1e6))
     preds = model(x)

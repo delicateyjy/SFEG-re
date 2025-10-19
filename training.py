@@ -17,18 +17,14 @@ from util.early_stopping import EarlyStopping
 from eval.evaluate import evaluate_online
 import util.misc as utils
 
-# 导入模型和损失函数
-from CrackDection.Crackformer2 import crackformer2, crackformer2_loss
-from CrackDection.CDSNet import CDSNET, exfloss
-from CrackDection.CTCrackSeg import CTCrackSeg, DiceBCELoss
-from CrackDection.UCtransNet import UCTransNet, WeightedDiceBCE
+# 导入模型和损失函数，根据选择的模型动态导入
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # 设置参数
 parser = argparse.ArgumentParser('crackdection')
-parser.add_argument('--train_model', type=str, choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet'], default='CDSNet')
-parser.add_argument('--dataset_path', default="/home/lab/Code/data/TUT")
+parser.add_argument('--train_model', type=str, choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet'], default='CTCrackSeg')
+parser.add_argument('--dataset_path', default="/home/lab/Code/data/CrackMap")
 parser.add_argument('--dataset_mode', type=str, default='crack')
 parser.add_argument('--load_width', type=int, default=512)
 parser.add_argument('--load_height', type=int, default=512)
@@ -42,25 +38,30 @@ args = parser.parse_args()
 # 创建不同模型以及对应的配置
 if args.train_model.lower() == 'crackformer2':
     # Crackformer2
+    from CrackDection.Crackformer2 import crackformer2, crackformer2_loss
     model, criterion = crackformer2().to(device), crackformer2_loss().to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 50, 100], gamma=0.1)
     args.epochs = 500
 elif args.train_model.lower() == 'cdsnet':
     # CDSNet
+    from CrackDection.CDSNet import CDSNET, exfloss
     model, criterion = CDSNET(in_channels=3, out_channels=1).to(device), exfloss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
     args.epochs = 100
 elif args.train_model.lower() == 'ctcrackseg':
     # CTCrackSeg
+    from CrackDection.CTCrackSeg import CTCrackSeg, DiceBCELoss
     model, criterion = CTCrackSeg().to(device), DiceBCELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=6)
     args.epochs = 100
     args.batch_size = 2
+    args.patience = 6
 elif args.train_model.lower() == 'uctransnet':
     # UCTransNet
+    from CrackDection.UCtransNet import UCTransNet, WeightedDiceBCE
     def get_CTranS_config():
         config = ml_collections.ConfigDict()
         config.transformer = ml_collections.ConfigDict()
@@ -173,6 +174,7 @@ for epoch in range(args.epochs):
         samples = data['image'].to(device)
         targets = data['label'].to(device)
 
+        # CTCrackSeg的数据集含有boundary，我们的没有，就直接用输出的Mask计算损失
         Mask = model(samples)
         Mask = Mask.float()
 
