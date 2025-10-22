@@ -26,7 +26,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 parser = argparse.ArgumentParser('crackdection')
 parser.add_argument('--train_model', type=str, 
                     choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet', 'Crackmer'], default='Crackmer')
-parser.add_argument('--dataset_path', default="/home/lab/Code/data/DeepCrack")
+parser.add_argument('--dataset_path', default="/home/lab/Code/data/CRACK500")
 parser.add_argument('--dataset_mode', type=str, default='crack')
 parser.add_argument('--load_width', type=int, default=512)
 parser.add_argument('--load_height', type=int, default=512)
