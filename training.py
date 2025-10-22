@@ -10,6 +10,7 @@ import logging
 import datetime
 import random
 import ml_collections
+import copy
 
 from dataset import create_dataset
 from util.logger import get_logger
@@ -23,11 +24,12 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # 设置参数
 parser = argparse.ArgumentParser('crackdection')
-parser.add_argument('--train_model', type=str, choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet'], default='CTCrackSeg')
-parser.add_argument('--dataset_path', default="/home/lab/Code/data/CrackMap")
+parser.add_argument('--train_model', type=str, 
+                    choices=['Crackformer2', 'CDSNet', 'CTCrackSeg', 'UCTransNet', 'Crackmer'], default='Crackmer')
+parser.add_argument('--dataset_path', default="/home/lab/Code/data/DeepCrack")
 parser.add_argument('--dataset_mode', type=str, default='crack')
-parser.add_argument('--load_width', type=int, default=256)
-parser.add_argument('--load_height', type=int, default=256)
+parser.add_argument('--load_width', type=int, default=512)
+parser.add_argument('--load_height', type=int, default=512)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_threads', type=int, default=0)
 parser.add_argument('--serial_batches', type=bool, default=False)
@@ -82,6 +84,14 @@ elif args.train_model.lower() == 'uctransnet':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1, eta_min=1e-4)
     args.epochs = 300
     args.patience = 50
+elif args.train_model.lower() == 'crackmer':
+    # Crackmer
+    from CrackDection.Crackmer import Net, Loss
+    model, criterion = Net().to(device), Loss().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=15, T_mult=2, eta_min=1e-4)
+    args.epochs = 80
+    args.batch_size = 2 # 原作者使用4，显存不够，改为2
 else:
     raise ValueError(f"未知的模型类型: {args.train_model}")
 
@@ -95,7 +105,7 @@ log = get_logger(output_dir, 'train')
 
 # 计算模型计算量等
 dummy_input = torch.randn(1, 3, args.load_height, args.load_width, device=device)
-flops, params = profile(model, inputs=(dummy_input,), verbose=False)
+flops, params = profile(copy.deepcopy(model), inputs=(dummy_input,), verbose=False)
 args.gflops = f"{flops / 1e9:.2f}G"
 args.m_params = f"{params / 1e6:.2f}M"
 print(f"Model Complexity: {args.gflops} FLOPs, {args.m_params} Params")
@@ -198,8 +208,8 @@ for epoch in range(args.epochs):
 
     # 早停判断是否更新学习率
     # 训练CTCrackSeg时，调度器放在验证阶段
-    # if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
-    #     scheduler.step()
+    if not (early_stopper and early_stopper.lr_patience < early_stopper.patience):
+        scheduler.step()
 
     # 每个epoch后进行验证
     print(f'---------------------- 第 {epoch + 1} 轮验证 ----------------------')
@@ -227,7 +237,7 @@ for epoch in range(args.epochs):
     eval_val = val_metrics.get('ODS_F1', 0) + val_metrics.get('OIS_F1', 0)
 
     # 训练CTCrackSeg时，调度器放在验证阶段，其他模型将以下代码注释
-    scheduler.step(eval_val)
+    # scheduler.step(eval_val)
 
     if early_stopper:
         should_stop = early_stopper(
